@@ -126,3 +126,13 @@ def test_device_store_binds_id_to_key(tmp_path):
     assert store.bind("111111111", a.public_bytes)
     assert not store.bind("111111111", b.public_bytes)
     assert store.lookup("111111111") == a.public_bytes
+
+
+def test_tls_errors_are_explained_in_french():
+    import ssl
+
+    client = RelayClient(Identity.generate(), "relais.example", [1], "", None)
+    msg = client.describe(ssl.SSLCertVerificationError("certificate verify failed: self-signed certificate"))
+    assert "empreinte TLS" in msg and "self-signed" not in msg
+    masked = RelayClient(Identity.generate(), "203.0.113.9", [1], "", None, display_name="serveur BrickMote")
+    assert "203.0.113.9" not in masked.describe(OSError("connect to 203.0.113.9 failed"))

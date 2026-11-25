@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import ssl
 import logging
 from typing import Awaitable, Callable, Optional
 
@@ -213,6 +214,13 @@ class RelayClient:
 
     def describe(self, exc: BaseException) -> str:
         """Human readable error, without the server address when it is masked."""
+        if isinstance(exc, ssl.SSLCertVerificationError):
+            return (
+                "certificat du serveur relais non reconnu : renseignez l'empreinte TLS "
+                "affichée par le serveur (Paramètres > Réseau)"
+            )
+        if isinstance(exc, ssl.SSLError):
+            return "échec de la connexion sécurisée (TLS) avec le serveur relais"
         if self.display_name:
             if isinstance(exc, asyncio.TimeoutError):
                 return "délai dépassé (vérifiez votre connexion Internet)"

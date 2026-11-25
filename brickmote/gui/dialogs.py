@@ -940,6 +940,17 @@ class SettingsDialog(QDialog):
         if s.relay_mode == "custom" and not s.relay_host:
             QMessageBox.warning(self, "BrickMote", "Indiquez l'adresse de votre serveur relais.")
             return
+        if s.relay_mode == "custom" and not self.relay_fp.text().strip():
+            answer = QMessageBox.question(
+                self,
+                "BrickMote",
+                "Aucune empreinte TLS n'est renseignée.\n\n"
+                "Un relais BrickMote utilise un certificat auto-signé : sans son empreinte "
+                "(affichée dans la console du serveur), la connexion sera refusée.\n\n"
+                "Enregistrer quand même (certificat signé par une autorité, ex. Let's Encrypt) ?",
+            )
+            if answer != QMessageBox.Yes:
+                return
         try:
             ports = [int(p) for p in self.relay_ports.text().replace(" ", "").split(",") if p]
         except ValueError:
