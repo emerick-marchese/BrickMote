@@ -43,6 +43,19 @@ _PATHS = {
     "alert": '<path d="M12 3.5 21.5 20h-19z"/><path d="M12 10v4M12 17h.01"/>',
     "more": '<path d="M6 12h.01M12 12h.01M18 12h.01"/>',
     "plug": '<path d="M9 3v5M15 3v5M6.5 8h11v3a5.5 5.5 0 0 1-11 0zM12 16.5V21"/>',
+    "star": '<path d="M12 3.5 14.6 8.8l5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/>',
+    "star_fill": '<path fill="currentColor" d="M12 3.5 14.6 8.8l5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/>',
+    "grid_large": '<rect x="4" y="4" width="7" height="7"/><rect x="13" y="4" width="7" height="7"/>'
+    '<rect x="4" y="13" width="7" height="7"/><rect x="13" y="13" width="7" height="7"/>',
+    "grid_small": '<rect x="3.5" y="3.5" width="4" height="4"/><rect x="10" y="3.5" width="4" height="4"/>'
+    '<rect x="16.5" y="3.5" width="4" height="4"/><rect x="3.5" y="10" width="4" height="4"/>'
+    '<rect x="10" y="10" width="4" height="4"/><rect x="16.5" y="10" width="4" height="4"/>'
+    '<rect x="3.5" y="16.5" width="4" height="4"/><rect x="10" y="16.5" width="4" height="4"/>'
+    '<rect x="16.5" y="16.5" width="4" height="4"/>',
+    "list": '<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
+    "more_v": '<path d="M12 5.5h.01M12 12h.01M12 18.5h.01"/>',
+    "edit": '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
+    "trash": '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
 }
 
 _SVG = (

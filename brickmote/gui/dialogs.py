@@ -483,8 +483,17 @@ def _perm_group(title: str, perms: dict) -> tuple[QGroupBox, dict]:
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, settings: Settings, device_id: str, known: KnownHosts, audit: AuditLog, parent=None):
+    def __init__(
+        self,
+        settings: Settings,
+        device_id: str,
+        known: KnownHosts,
+        audit: AuditLog,
+        parent=None,
+        clear_thumbnails: Optional[Callable[[], None]] = None,
+    ):
         super().__init__(parent)
+        self._clear_thumbnails = clear_thumbnails
         self.setWindowTitle("BrickMote - Paramètres")
         self.resize(640, 600)
         self.s = copy.deepcopy(settings)
@@ -530,7 +539,22 @@ class SettingsDialog(QDialog):
         self.theme.setCurrentIndex(max(0, self.theme.findData(self.s.theme)))
         form.addRow("Thème", self.theme)
         form.addRow("", _label("Le changement de thème s'applique au prochain démarrage de BrickMote.", "Small", True))
+        self.thumbs = QCheckBox("Garder une miniature de l'écran des postes distants (onglet Récents)")
+        self.thumbs.setChecked(self.s.save_thumbnails)
+        form.addRow("Miniatures", self.thumbs)
+        row = QHBoxLayout()
+        row.addWidget(_label("Stockées uniquement sur ce poste, accès réservé à votre compte.", "Small", True), 1)
+        clear = _button("Effacer les miniatures")
+        clear.setEnabled(self._clear_thumbnails is not None)
+        clear.clicked.connect(self._on_clear_thumbnails)
+        row.addWidget(clear)
+        form.addRow("", row)
         return w
+
+    def _on_clear_thumbnails(self):
+        if self._clear_thumbnails is not None:
+            self._clear_thumbnails()
+            QMessageBox.information(self, "BrickMote", "Les miniatures ont été supprimées.")
 
     def _security_tab(self):
         w = QWidget()
@@ -677,6 +701,7 @@ class SettingsDialog(QDialog):
         s.quality = self.quality.currentData()
         s.fps = self.fps.value()
         s.theme = self.theme.currentData()
+        s.save_thumbnails = self.thumbs.isChecked()
         s.interactive_enabled = self.interactive.isChecked()
         s.interactive_permissions = {k: cb.isChecked() for k, cb in self.inter_perms.items()}
         s.unattended_enabled = self.unattended.isChecked() and s.password_verifier() is not None

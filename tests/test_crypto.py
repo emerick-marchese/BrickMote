@@ -138,3 +138,19 @@ async def test_channel_rejects_oversized_frame():
     await wa.drain()
     with pytest.raises(FrameError):
         await receiver.recv()
+
+
+def test_known_hosts_favorites_and_alias(tmp_path):
+    from brickmote.config import KnownHosts
+
+    kh = KnownHosts(tmp_path / "kh.json")
+    ident = Identity.generate()
+    kh.remember(ident.device_id, ident.public_bytes, "PC-Bureau")
+    kh.set_favorite(ident.device_id, True)
+    kh.set_alias(ident.device_id, "  Serveur\x00 maison  ")
+    kh.remember(ident.device_id, ident.public_bytes, "PC-Bureau")  # a new session keeps them
+    again = KnownHosts(tmp_path / "kh.json").entries()[ident.device_id]
+    assert again["favorite"] is True
+    assert again["alias"] == "Serveur maison"
+    kh.set_favorite("999999999", True)  # unknown device: ignored
+    assert "999999999" not in kh.entries()

@@ -182,8 +182,10 @@ class RemoteScreen(QWidget):
 
 
 class ViewerWindow(QMainWindow):
-    def __init__(self, core_thread: CoreThread, target: str, parent=None):
+    def __init__(self, core_thread: CoreThread, target: str, parent=None, on_thumbnail=None):
         super().__init__(parent)
+        self.on_thumbnail = on_thumbnail  # callable(device_id, QImage): keeps a preview for "Récents"
+        self._snapshot_scheduled = False
         self.core_thread = core_thread
         self.target = target
         self.session = None
@@ -381,6 +383,16 @@ class ViewerWindow(QMainWindow):
     def _on_frame(self, session, width, height, cursor, images):
         self._frames += 1
         self.screen.apply_frame(width, height, cursor, images)
+        if not self._snapshot_scheduled:
+            self._snapshot_scheduled = True
+            QTimer.singleShot(4000, self._snapshot)
+
+    def _snapshot(self):
+        if self.on_thumbnail is not None and self.session is not None and self.screen.image is not None:
+            try:
+                self.on_thumbnail(self.session.peer.device_id, self.screen.image.copy())
+            except RuntimeError:  # main window already gone
+                pass
 
     def _on_permissions(self, session, perms: dict):
         self.act_file.setEnabled(bool(perms.get("files")))
@@ -406,6 +418,7 @@ class ViewerWindow(QMainWindow):
 
     def _on_closed(self, session, reason: str):
         self._stats.stop()
+        self._snapshot()
         if not self._closing:
             self._closing = True
             QMessageBox.information(self, "BrickMote", f"Session terminée : {reason}")
@@ -485,6 +498,7 @@ class ViewerWindow(QMainWindow):
         except (RuntimeError, TypeError):
             pass
         if self.session is not None and not self.session.closed:
+            self._snapshot()
             self.screen.release_all()
             self.core_thread.submit(self.session.close("le poste client a mis fin à la session"))
         super().closeEvent(event)

@@ -146,6 +146,31 @@ QPushButton#ConnectButton:pressed {{ background: #9C2C29; }}
 #DeviceTag {{ color: {FAINT}; font-size: 8.5pt; }}
 #Empty {{ color: {FAINT}; background: transparent; border: 2px dashed {LINE}; border-radius: 2px; padding: 22px; }}
 
+/* device browser (tabs, view modes, tiles, list rows) */
+QPushButton#Tab {{
+    background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0;
+    padding: 8px 2px; margin-right: 22px; color: {MUTED}; font-size: 11pt; font-weight: 600;
+}}
+QPushButton#Tab:hover {{ color: {INK}; border-color: transparent; }}
+QPushButton#Tab:checked, QPushButton#Tab:checked:hover {{ color: {BRICK}; border-bottom: 2px solid {BRICK}; }}
+#TabLine {{ background: {LINE}; }}
+QToolButton#ViewButton {{ background: transparent; border: 1px solid transparent; border-radius: 2px; padding: 5px; margin-left: 2px; }}
+QToolButton#ViewButton:hover {{ background: {NEUTRAL_SOFT}; }}
+QToolButton#ViewButton:checked {{ background: {NEUTRAL_SOFT}; border: 1px solid {LINE}; }}
+#Tile {{ background: {CARD}; border: 1px solid {LINE}; border-radius: 2px; }}
+#Tile:hover {{ border: 1px solid {BRICK}; }}
+#TileFooter {{ background: transparent; border-top: 1px solid {LINE}; }}
+#TileName {{ font-weight: 700; font-size: 10pt; }}
+#TileId {{ color: {MUTED}; font-size: 9pt; }}
+QToolButton#TileMenu {{ background: transparent; border: none; border-radius: 2px; padding: 4px; }}
+QToolButton#TileMenu:hover {{ background: {NEUTRAL_SOFT}; }}
+QToolButton#TileStar {{ background: rgba(0, 0, 0, 0.45); border: none; border-radius: 2px; padding: 4px; }}
+QToolButton#TileStar:hover {{ background: rgba(0, 0, 0, 0.70); }}
+QToolButton#RowStar {{ background: transparent; border: none; border-radius: 2px; padding: 4px; }}
+QToolButton#RowStar:hover {{ background: {NEUTRAL_SOFT}; }}
+#DeviceRow {{ background: {CARD}; border: 1px solid {LINE}; border-radius: 2px; }}
+#DeviceRow:hover {{ border: 1px solid {BRICK}; }}
+
 /* generic controls */
 QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QTextEdit {{
     background: {INPUT_BG}; color: {INK}; border: 1px solid {INPUT_BORDER}; border-radius: 2px; padding: 6px 8px;

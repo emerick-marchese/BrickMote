@@ -8,8 +8,8 @@ import sys
 import time
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QGuiApplication
+from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer
+from PySide6.QtGui import QAction, QGuiApplication, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -35,13 +35,14 @@ from PySide6.QtWidgets import (
 
 from .. import __version__
 from ..core import BrickMoteCore
-from ..util import format_id
+from ..util import format_id, normalize_id, secure_write
 from .bridge import CoreThread, PendingRequest, QtCoreUI
 from .dialogs import AuditDialog, ChatDialog, HostSessionPanel, IncomingDialog, SettingsDialog
 from .icons import icon, pixmap
 from .style import C, app_icon, avatar, logo, shadow
 from .viewer_window import ViewerWindow
-from .widgets import Card, DeviceCard, EmptyState, FlowLayout, StatusRow, relative_time, section_header
+from .devices import DeviceBrowser
+from .widgets import Card, EmptyState, StatusRow, section_header
 
 NAV_COLOR, NAV_ACTIVE = "#8B919C", "#FFFFFF"
 
@@ -73,7 +74,7 @@ def local_ips() -> list[str]:
     return sorted(ip for ip in ips if not ip.startswith("127."))
 
 
-def _scroll_page(title: str, subtitle: str) -> tuple[QScrollArea, QVBoxLayout]:
+def _scroll_page(title: str, subtitle: str, header: bool = True) -> tuple[QScrollArea, QVBoxLayout]:
     area = QScrollArea()
     area.setWidgetResizable(True)
     area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -83,19 +84,13 @@ def _scroll_page(title: str, subtitle: str) -> tuple[QScrollArea, QVBoxLayout]:
     lay = QVBoxLayout(page)
     lay.setContentsMargins(34, 28, 34, 28)
     lay.setSpacing(16)
-    head = QVBoxLayout()
-    head.setSpacing(2)
-    head.addWidget(QLabel(title, objectName="PageTitle"))
-    head.addWidget(QLabel(subtitle, objectName="PageSubtitle"))
-    lay.addLayout(head)
+    if header:
+        head = QVBoxLayout()
+        head.setSpacing(2)
+        head.addWidget(QLabel(title, objectName="PageTitle"))
+        head.addWidget(QLabel(subtitle, objectName="PageSubtitle"))
+        lay.addLayout(head)
     return area, lay
-
-
-def _flow_container() -> tuple[QWidget, FlowLayout]:
-    w = QWidget()
-    flow = FlowLayout(w, spacing=14)
-    w.setLayout(flow)
-    return w, flow
 
 
 class MainWindow(QMainWindow):
@@ -111,6 +106,7 @@ class MainWindow(QMainWindow):
         self._session_started: dict[int, float] = {}
         self._viewers: list[ViewerWindow] = []
         self._lan_peers: dict = {}
+        self._thumb_cache: dict = {}
         self._last_remote_clip: Optional[str] = None
         self._quitting = False
         self.setWindowTitle("BrickMote")
@@ -139,7 +135,6 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
         outer.addWidget(self.pages, 1)
         self.pages.addWidget(self._build_home())
-        self.pages.addWidget(self._build_devices())
         self.pages.addWidget(self._build_sessions())
 
     def _nav_button(self, icon_name: str, text: str, checkable: bool = True) -> QPushButton:
@@ -170,7 +165,6 @@ class MainWindow(QMainWindow):
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
         self.nav_home = self._nav_button("home", "Accueil")
-        self.nav_devices = self._nav_button("devices", "Appareils")
         self.nav_sessions = self._nav_button("users", "Sessions")
         badge_lay = QHBoxLayout(self.nav_sessions)
         badge_lay.setContentsMargins(0, 0, 10, 0)
@@ -179,7 +173,7 @@ class MainWindow(QMainWindow):
         self.sessions_badge.setAlignment(Qt.AlignCenter)
         self.sessions_badge.hide()
         badge_lay.addWidget(self.sessions_badge)
-        for i, b in enumerate((self.nav_home, self.nav_devices, self.nav_sessions)):
+        for i, b in enumerate((self.nav_home, self.nav_sessions)):
             self.nav_group.addButton(b, i)
             lay.addWidget(b)
         self.nav_home.setChecked(True)
@@ -203,7 +197,7 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- home
     def _build_home(self) -> QWidget:
-        area, lay = _scroll_page("Accueil", "Prenez le contrôle d'un poste ou laissez quelqu'un vous aider, en toute sécurité.")
+        area, lay = _scroll_page("Accueil", "", header=False)
 
         # connect bar
         bar = QFrame(objectName="ConnectBar")
@@ -244,8 +238,8 @@ class MainWindow(QMainWindow):
         hero = QFrame(objectName="Hero")
         shadow(hero, blur=12, dy=2, alpha=40)
         hl = QVBoxLayout(hero)
-        hl.setContentsMargins(26, 22, 26, 22)
-        hl.setSpacing(6)
+        hl.setContentsMargins(24, 16, 24, 16)
+        hl.setSpacing(4)
         cap = QHBoxLayout()
         cap.addWidget(QLabel("CE POSTE · VOTRE ADRESSE", objectName="HeroCaption"))
         cap.addStretch(1)
@@ -278,7 +272,6 @@ class MainWindow(QMainWindow):
         hint.setWordWrap(True)
         self.hero_hint = hint
         hl.addWidget(hint)
-        hl.addSpacing(10)
         hl.addStretch(1)
         self.lbl_fp = QLabel("", objectName="HeroFp")
         self.lbl_fp.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -286,9 +279,9 @@ class MainWindow(QMainWindow):
         hl.addWidget(self.lbl_fp)
         top.addWidget(hero, 5)
 
-        status = Card(margins=20, spacing=2)
+        status = Card(margins=18, spacing=0)
         status.body.addWidget(QLabel("État de la connexion", objectName="CardTitle"))
-        status.body.addSpacing(6)
+        status.body.addSpacing(2)
         self.row_relay = StatusRow("server", "Serveur relais")
         self.row_direct = StatusRow("link", "Connexion directe")
         self.row_access = StatusRow("shield", "Accès entrant")
@@ -302,29 +295,9 @@ class MainWindow(QMainWindow):
         self.lbl_warning.setWordWrap(True)
         lay.addWidget(self.lbl_warning)
 
-        lay.addWidget(section_header("Postes", "Cliquez sur un poste pour vous y connecter"))
-        self.home_devices, self.home_flow = _flow_container()
-        lay.addWidget(self.home_devices)
-        self.home_empty = EmptyState(
-            "Aucun poste pour l'instant.\nSaisissez l'ID affiché sur l'ordinateur distant dans la barre ci-dessus."
-        )
-        lay.addWidget(self.home_empty)
-        lay.addStretch(1)
-        return area
-
-    # ------------------------------------------------------------- devices
-    def _build_devices(self) -> QWidget:
-        area, lay = _scroll_page("Appareils", "Les postes détectés sur votre réseau et ceux auxquels vous vous êtes déjà connecté.")
-        lay.addWidget(section_header("Sur le réseau local", "Découverte automatique (UDP 50001)"))
-        self.lan_devices, self.lan_flow = _flow_container()
-        lay.addWidget(self.lan_devices)
-        self.lan_empty = EmptyState("Aucun poste BrickMote détecté sur ce réseau.")
-        lay.addWidget(self.lan_empty)
-        lay.addWidget(section_header("Postes connus", "Clé d'identité épinglée · clic droit pour oublier"))
-        self.known_devices, self.known_flow = _flow_container()
-        lay.addWidget(self.known_devices)
-        self.known_empty = EmptyState("Vous ne vous êtes encore connecté à aucun poste.")
-        lay.addWidget(self.known_empty)
+        lay.addSpacing(6)
+        self.browser = DeviceBrowser(self.core.settings.device_view)
+        lay.addWidget(self.browser)
         lay.addStretch(1)
         return area
 
@@ -349,6 +322,11 @@ class MainWindow(QMainWindow):
     # =============================================================== wiring
     def _wire(self):
         self.nav_group.idClicked.connect(self._go)
+        self.browser.connect_requested.connect(self._connect_to)
+        self.browser.favorite_toggled.connect(self._toggle_favorite)
+        self.browser.rename_requested.connect(self._rename)
+        self.browser.forget_requested.connect(self._forget)
+        self.browser.view_changed.connect(self._set_view)
         self.nav_settings.clicked.connect(self.open_settings)
         self.nav_log.clicked.connect(lambda: AuditDialog(self.core.audit, self).exec())
         self.btn_connect.clicked.connect(self.connect_clicked)
@@ -376,7 +354,7 @@ class MainWindow(QMainWindow):
     def _go(self, index: int):
         self.pages.setCurrentIndex(index)
         self.nav_group.button(index).setChecked(True)
-        if index == 2:
+        if index == 1:
             self.refresh_activity()
 
     def _toggle_password(self, on: bool):
@@ -487,67 +465,97 @@ class MainWindow(QMainWindow):
     def refresh_recent(self):
         self._refresh_devices()
 
-    def _device_card(self, dev: str, name: str, tag: str, online: bool, known: bool) -> DeviceCard:
-        actions = [("Copier l'ID", lambda d=dev: QGuiApplication.clipboard().setText(d))]
-        if known:
-            actions.append(("Oublier ce poste", lambda d=dev: self._forget(d)))
-        card = DeviceCard(dev, name, tag, online, actions)
-        card.activated.connect(self._connect_to)
-        return card
+    def _refresh_devices(self):
+        known = {k: v for k, v in self.core.known_hosts.entries().items() if isinstance(v, dict)}
+        self.browser.set_data(known, dict(self._lan_peers), self._thumbnail)
+
+    # ----------------------------------------------------- thumbnails
+    def _thumb_path(self, device_id: str):
+        if not normalize_id(device_id):
+            return None
+        return self.core.paths.thumbnails / f"{device_id}.jpg"
+
+    def _thumbnail(self, device_id: str) -> Optional[QPixmap]:
+        path = self._thumb_path(device_id)
+        if path is None or not self.core.settings.save_thumbnails:
+            return None
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return None
+        cached = self._thumb_cache.get(device_id)
+        if cached and cached[0] == mtime:
+            return cached[1]
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            return None
+        self._thumb_cache[device_id] = (mtime, pix)
+        return pix
+
+    def save_thumbnail(self, device_id: str, image: QImage) -> None:
+        """Called by viewer windows: keep a small preview of the remote screen."""
+        path = self._thumb_path(device_id)
+        if path is None or not self.core.settings.save_thumbnails or image.isNull():
+            return
+        thumb = image.scaled(480, 270, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        buf = QBuffer()
+        buf.open(QIODevice.WriteOnly)
+        thumb.save(buf, "JPG", 70)
+        try:
+            secure_write(path, bytes(buf.data()))
+        except OSError:
+            return
+        self._thumb_cache.pop(device_id, None)
+        QTimer.singleShot(0, self._refresh_devices)
+
+    def clear_thumbnails(self) -> None:
+        folder = self.core.paths.thumbnails
+        for f in folder.glob("*.jpg") if folder.exists() else []:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        self._thumb_cache.clear()
+        self._refresh_devices()
+
+    # -------------------------------------------------- device actions
+    def _toggle_favorite(self, dev: str, on: bool):
+        self.core.known_hosts.set_favorite(dev, on)
+        self._refresh_devices()
+
+    def _rename(self, dev: str):
+        entry = self.core.known_hosts.entries().get(dev, {})
+        current = entry.get("alias") or entry.get("name") or ""
+        text, ok = QInputDialog.getText(
+            self, "Renommer le poste", f"Nom affiché pour {format_id(dev)} :", QLineEdit.Normal, current
+        )
+        if ok:
+            self.core.known_hosts.set_alias(dev, text)
+            self._refresh_devices()
 
     def _forget(self, dev: str):
         if (
             QMessageBox.question(
                 self,
                 "BrickMote",
-                f"Oublier le poste {format_id(dev)} ?\nSa clé d'identité épinglée sera supprimée.",
+                f"Oublier le poste {format_id(dev)} ?\n"
+                "Sa clé d'identité épinglée et sa miniature seront supprimées.",
             )
             == QMessageBox.Yes
         ):
             self.core.known_hosts.forget(dev)
+            path = self._thumb_path(dev)
+            if path is not None:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            self._thumb_cache.pop(dev, None)
             self._refresh_devices()
 
-    def _refresh_devices(self):
-        known = {
-            k: v for k, v in self.core.known_hosts.entries().items() if isinstance(v, dict)
-        }
-        lan = self._lan_peers
-
-        def name_of(dev):
-            return known.get(dev, {}).get("name", "")
-
-        # home: LAN first, then most recent
-        self.home_flow.clear()
-        shown = 0
-        for dev, entry in sorted(lan.items()):
-            self.home_flow.addWidget(self._device_card(dev, name_of(dev), f"Réseau local · {entry['ip']}", True, dev in known))
-            shown += 1
-        recent = sorted(known.items(), key=lambda kv: -int(kv[1].get("last_seen", 0) or 0))
-        for dev, entry in recent:
-            if shown >= 9:
-                break
-            if dev in lan:
-                continue
-            self.home_flow.addWidget(
-                self._device_card(dev, entry.get("name", ""), f"Vu {relative_time(entry.get('last_seen'))}", False, True)
-            )
-            shown += 1
-        self.home_devices.setVisible(shown > 0)
-        self.home_empty.setVisible(shown == 0)
-
-        # devices page
-        self.lan_flow.clear()
-        for dev, entry in sorted(lan.items()):
-            self.lan_flow.addWidget(self._device_card(dev, name_of(dev), f"{entry['ip']}:{entry['port']}", True, dev in known))
-        self.lan_devices.setVisible(bool(lan))
-        self.lan_empty.setVisible(not lan)
-        self.known_flow.clear()
-        for dev, entry in recent:
-            self.known_flow.addWidget(
-                self._device_card(dev, entry.get("name", ""), f"Vu {relative_time(entry.get('last_seen'))}", dev in lan, True)
-            )
-        self.known_devices.setVisible(bool(known))
-        self.known_empty.setVisible(not known)
+    def _set_view(self, view: str):
+        self.core.settings.device_view = view
+        self.core_thread.submit(_call(self.core.save_settings))
 
     # ============================================================= sessions
     def refresh_sessions(self):
@@ -626,10 +634,17 @@ class MainWindow(QMainWindow):
     # ============================================================= settings
     def open_settings(self):
         dlg = SettingsDialog(
-            self.core.settings, self.core.identity.device_id, self.core.known_hosts, self.core.audit, self
+            self.core.settings,
+            self.core.identity.device_id,
+            self.core.known_hosts,
+            self.core.audit,
+            self,
+            clear_thumbnails=self.clear_thumbnails,
         )
         if dlg.exec():
             new = dlg.result_settings()
+            if not new.save_thumbnails:
+                self.clear_thumbnails()
 
             async def apply():
                 self.core.settings = new
@@ -655,7 +670,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "BrickMote", "Saisissez le mot de passe d'accès sans surveillance.")
             self.password.setFocus()
             return
-        win = ViewerWindow(self.core_thread, format_id(target) if target.replace(" ", "").isdigit() else target)
+        win = ViewerWindow(
+            self.core_thread,
+            format_id(target) if target.replace(" ", "").isdigit() else target,
+            on_thumbnail=self.save_thumbnail,
+        )
         win.setWindowIcon(app_icon())
         win.setAttribute(Qt.WA_DeleteOnClose)
         win.destroyed.connect(lambda *_: self._viewers.remove(win) if win in self._viewers else None)
@@ -762,7 +781,7 @@ class MainWindow(QMainWindow):
         self._host_sessions.pop(id(session), None)
         self._session_started.pop(id(session), None)
         self.refresh_sessions()
-        if self.pages.currentIndex() == 2:
+        if self.pages.currentIndex() == 1:
             self.refresh_activity()
         if self.tray:
             self.tray.showMessage("BrickMote", f"Session avec {session.peer.name} terminée : {reason}")

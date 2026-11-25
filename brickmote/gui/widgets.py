@@ -6,12 +6,14 @@ import time
 from typing import Callable, Optional
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QLayout,
     QMenu,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -40,6 +42,22 @@ def relative_time(ts: Optional[int]) -> str:
     if delta < 2 * 86400:
         return "hier"
     return f"il y a {delta // 86400} j"
+
+
+class ElidedLabel(QLabel):
+    """Single-line label that ends with … instead of overflowing."""
+
+    def __init__(self, text: str = "", object_name: str = ""):
+        super().__init__(text, objectName=object_name)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setToolTip(text)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setPen(self.palette().color(self.foregroundRole()))
+        text = self.fontMetrics().elidedText(self.text(), Qt.ElideRight, self.width())
+        p.drawText(self.rect(), int(self.alignment()) | Qt.AlignVCenter, text)
+        p.end()
 
 
 class FlowLayout(QLayout):
@@ -102,6 +120,7 @@ class FlowLayout(QLayout):
         while self._items:
             item = self._items.pop()
             if item.widget():
+                item.widget().hide()  # deleteLater only runs on the next event-loop pass
                 item.widget().deleteLater()
 
 
@@ -185,9 +204,7 @@ class StatusRow(QWidget):
         text = QVBoxLayout()
         text.setSpacing(2)
         text.addWidget(QLabel(title, objectName="StatusTitle"))
-        self.detail = QLabel("", objectName="StatusDetail")
-        self.detail.setWordWrap(True)
-        self.detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.detail = ElidedLabel("", "StatusDetail")
         text.addWidget(self.detail)
         lay.addLayout(text, 1)
         self.pill = QLabel("", objectName="PillNeutral")

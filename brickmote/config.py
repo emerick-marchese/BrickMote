@@ -66,6 +66,8 @@ class Settings:
     quality: str = "balanced"  # low | balanced | high
     fps: int = 20
     theme: str = "dark"  # dark | light
+    device_view: str = "large"  # large | small | list
+    save_thumbnails: bool = True  # small preview of the remote screen in "Récents"
 
     def password_verifier(self) -> Optional[PasswordVerifier]:
         if not self.password:
@@ -96,6 +98,8 @@ class Settings:
             self.quality = "balanced"
         if self.theme not in ("dark", "light"):
             self.theme = "dark"
+        if self.device_view not in ("large", "small", "list"):
+            self.device_view = "large"
         self.fps = max(1, min(60, int(self.fps))) if isinstance(self.fps, int) else 20
         for name in ("interactive_permissions", "unattended_permissions"):
             perms = getattr(self, name)
@@ -141,6 +145,21 @@ class KnownHosts:
                 entry["address"] = address
             self._data[device_id] = entry
             secure_write(self.path, json.dumps(self._data, indent=2).encode("utf-8"))
+
+    def _update(self, device_id: str, **fields) -> None:
+        with self._lock:
+            entry = self._data.get(device_id)
+            if not isinstance(entry, dict):
+                return
+            entry.update(fields)
+            secure_write(self.path, json.dumps(self._data, indent=2).encode("utf-8"))
+
+    def set_favorite(self, device_id: str, favorite: bool) -> None:
+        self._update(device_id, favorite=bool(favorite))
+
+    def set_alias(self, device_id: str, alias: str) -> None:
+        alias = "".join(ch for ch in alias if ch.isprintable()).strip()[:64]
+        self._update(device_id, alias=alias)
 
     def forget(self, device_id: str) -> None:
         with self._lock:
@@ -193,3 +212,4 @@ class Paths:
         self.settings = self.base / "settings.json"
         self.known_hosts = self.base / "known_hosts.json"
         self.audit = self.base / "audit.log"
+        self.thumbnails = self.base / "thumbnails"

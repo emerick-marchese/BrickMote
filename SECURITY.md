@@ -66,6 +66,7 @@ Chaque message est chiffré en AES-256-GCM avec le nonce `0⁴ ‖ compteur₆�
 | `settings.json` | réglages, dérivée scrypt du mot de passe, secret TOTP | 0600, écriture atomique |
 | `known_hosts.json` | clés épinglées des postes distants | 0600 |
 | `audit.log` | journal des connexions (acceptées, refusées, échecs) | 0600 |
+| `thumbnails/` | miniature (480×270) de l'écran des postes distants, affichée dans « Récents » | 0600, désactivable et effaçable dans Paramètres > Général |
 
 Emplacements : `%APPDATA%\BrickMote` (Windows), `~/Library/Application Support/BrickMote` (macOS), `~/.config/brickmote` (Linux).
 

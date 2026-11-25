@@ -14,6 +14,7 @@ Logiciel de **bureau à distance** dans l'esprit d'AnyDesk : un ID à 9 chiffres
 | Échanges | presse-papiers bidirectionnel, transfert de fichiers dans les deux sens (vérifié SHA-256), chat |
 | Accès | **interactif** (une personne accepte, avec un code de sécurité) ou **sans surveillance** (mot de passe + double authentification TOTP en option) |
 | Contrôle d'accès | liste blanche d'ID, liste de postes bloqués, droits modifiables en direct pendant la session, journal de sécurité |
+| Postes | onglets Récents, Favoris et Réseau local, en grandes vignettes (avec aperçu du dernier écran vu), petites vignettes ou liste ; étoile pour épingler, renommage, oubli d'un poste |
 | Transparence | un panneau « Session à distance en cours » reste affiché sur l'hôte tant que quelqu'un est connecté : **pas de mode caché** |
 
 ## Ports (identiques à AnyDesk)
