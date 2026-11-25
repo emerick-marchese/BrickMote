@@ -105,24 +105,74 @@ def wake_targets(wol: dict) -> list[str]:
     return targets
 
 
+def _interface_broadcasts() -> list[tuple[str, str]]:
+    """(local IPv4, directed broadcast) of every network card: Windows sends a
+    limited broadcast (255.255.255.255) on a single card, often a virtual
+    one (VMware, VirtualBox, Hyper-V...), so we also broadcast on each card."""
+    try:
+        import psutil
+    except ImportError:
+        return []
+    out = []
+    for addrs in psutil.net_if_addrs().values():
+        for a in addrs:
+            if a.family != socket.AF_INET or not a.address or a.address.startswith("127."):
+                continue
+            bcast = a.broadcast
+            if not bcast and a.netmask:
+                try:
+                    bcast = str(ipaddress.IPv4Network(f"{a.address}/{a.netmask}", strict=False).broadcast_address)
+                except ValueError:
+                    bcast = None
+            if bcast:
+                out.append((a.address, bcast))
+    return out
+
+
+def _resolve(addr: str, port: int) -> list[tuple]:
+    """Every address of ``addr``, IPv4 first (port forwards on boxes are IPv4)."""
+    infos = socket.getaddrinfo(addr, port, type=socket.SOCK_DGRAM)
+    seen, out = set(), []
+    for family, _, _, _, sockaddr in sorted(infos, key=lambda i: i[0] != socket.AF_INET):
+        if sockaddr[0] not in seen:
+            seen.add(sockaddr[0])
+            out.append((family, sockaddr))
+    return out
+
+
 def _send(packet: bytes, targets: list[str], port: int, repeat: int) -> tuple[list[str], list[str]]:
     sent, errors = [], []
     for addr in targets:
         try:
-            infos = socket.getaddrinfo(addr, port, type=socket.SOCK_DGRAM)
+            resolved = _resolve(addr, port)
         except socket.gaierror as exc:
             errors.append(f"{addr} : nom introuvable ({exc.strerror or exc})")
             continue
-        family, _, _, _, sockaddr = infos[0]
-        try:
-            with socket.socket(family, socket.SOCK_DGRAM) as sock:
-                if family == socket.AF_INET:
-                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                for _ in range(max(1, repeat)):
-                    sock.sendto(packet, sockaddr)
-            sent.append(f"{addr}:{port}")
-        except OSError as exc:
-            errors.append(f"{addr} : {exc.strerror or exc}")
+        ok = []
+        for family, sockaddr in resolved:
+            try:
+                with socket.socket(family, socket.SOCK_DGRAM) as sock:
+                    if family == socket.AF_INET:
+                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                    for _ in range(max(1, repeat)):
+                        sock.sendto(packet, sockaddr)
+                ok.append(sockaddr[0])
+            except OSError as exc:
+                errors.append(f"{addr} ({sockaddr[0]}) : {exc.strerror or exc}")
+        if addr == DEFAULT_ADDRESS:
+            for local_ip, bcast in _interface_broadcasts():
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                        sock.bind((local_ip, 0))
+                        for _ in range(max(1, repeat)):
+                            sock.sendto(packet, (bcast, port))
+                    ok.append(bcast)
+                except OSError:
+                    pass  # disconnected or virtual card: ignore
+        if ok:
+            shown = addr if ok == [addr] else f"{addr} → {', '.join(dict.fromkeys(ok))}"
+            sent.append(f"{shown}:{port}" if ok == [addr] else f"{shown} (port {port})")
     return sent, errors
 
 

@@ -164,3 +164,25 @@ def test_public_ipv4():
     assert public_ipv4("86.12.34.56") == "86.12.34.56"
     for private in ("192.168.1.2", "10.0.0.1", "127.0.0.1", "100.64.0.1", "::1", None, "x"):
         assert public_ipv4(private) is None
+
+
+def test_ipv4_is_preferred_and_all_addresses_are_used(monkeypatch):
+    import brickmote.net.wol as wol
+
+    fake = [
+        (socket.AF_INET6, socket.SOCK_DGRAM, 17, "", ("2001:db8::1", 9, 0, 0)),
+        (socket.AF_INET, socket.SOCK_DGRAM, 17, "", ("127.0.0.1", 9)),
+    ]
+    monkeypatch.setattr(wol.socket, "getaddrinfo", lambda *a, **k: fake)
+    order = [s[0] for _, s in wol._resolve("mabox.ddns.net", 9)]
+    assert order == ["127.0.0.1", "2001:db8::1"]
+
+
+def test_box_hostname_reaches_its_ipv4(monkeypatch):
+    rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rx.bind(("127.0.0.1", 0))
+    rx.settimeout(2)
+    port = rx.getsockname()[1]
+    sent, errors = send_wake({"mac": MAC, "box": "localhost", "port": port, "local": False})
+    assert sent and rx.recv(200) == magic_packet(MAC)
+    rx.close()

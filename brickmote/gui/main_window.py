@@ -684,12 +684,13 @@ class MainWindow(QMainWindow):
                 self.wake_result.emit(f"Réveil de {label} impossible : {exc}", False)
                 return
             box = (wol.get("box") or "").strip()
-            via = []
-            if box and any(t.startswith(box + ":") for t in sent):
-                via.append(f"box {box}:{wol.get('port') or 9}")
-            if any(not (box and t.startswith(box + ":")) for t in sent):
-                via.append("réseau local")
-            text = f"Signal de réveil envoyé à {label} ({' + '.join(via)}).\nLe démarrage peut prendre jusqu'à une minute."
+            box_lines = [t for t in sent if box and t.startswith(box)]
+            text = f"Signal de réveil envoyé à {label}."
+            if box_lines:
+                text += "\nBox : " + box_lines[0]
+            if len(sent) > len(box_lines):
+                text += "\nRéseau local : diffusion sur toutes les cartes réseau"
+            text += "\nLe démarrage peut prendre jusqu'à une minute."
             if errors:
                 text += "\nNon envoyé : " + " ; ".join(errors)
             self.wake_result.emit(text, True)
