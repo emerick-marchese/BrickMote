@@ -206,3 +206,20 @@ async def test_lan_discovery_finds_peer(tmp_path):
     assert a.lookup("111111111") is None  # own announcements are ignored
     await a.stop()
     await b.stop()
+
+
+async def test_host_sends_box_address_for_wake(tmp_path):
+    host, _ = make_core(tmp_path, "host", wol_box_address="mabox.ddns.net", wol_box_port=7)
+    viewer, _ = make_core(tmp_path, "viewer")
+    await host.start()
+    await viewer.start()
+    events = Recorder()
+    session = await viewer.connect(f"127.0.0.1:{host.direct_port}", None, events)
+    info = (await events.wait_for("info"))[1]
+    if info["wol"] is None:
+        pytest.skip("no network interface with a MAC address in this environment")
+    assert info["wol"]["box"] == "mabox.ddns.net"
+    assert info["wol"]["port"] == 7
+    await session.close()
+    await viewer.stop()
+    await host.stop()

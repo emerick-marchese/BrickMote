@@ -105,13 +105,15 @@ Sur le poste à contrôler, ouvrez **Paramètres > Sécurité** :
 
 Côté client, cochez **Accès sans surveillance** sous le champ d'ID et saisissez le mot de passe.
 
-### Réveiller un PC (Wake-on-LAN)
+### Réveiller un PC (Wake-on-LAN), via la box comme une appli de téléphone
 
-- **En un clic** : après une première session, BrickMote connaît l'adresse MAC du poste. Un bouton ⏻ apparaît sur sa vignette, et une proposition « Réveiller ce PC » s'affiche si une connexion échoue.
-- **Manuellement**, comme une appli de téléphone : bouton **Réveiller un PC** sous la barre de connexion, puis adresse MAC, adresse de destination et **port UDP au choix** (9 par défaut, souvent 7 ou 9). Un mot de passe SecureOn est facultatif.
-- **Depuis Internet** : indiquez l'adresse publique ou le nom de votre box, et redirigez ce port UDP vers le réseau local dans la box.
+BrickMote envoie le « paquet magique » à **l'adresse publique de votre box** (IP ou nom DynDNS), sur le **port UDP de votre choix**. La box le transmet au PC. Le paquet part aussi en diffusion sur le réseau local, ce qui permet de réveiller le PC aussi bien depuis chez vous que depuis l'extérieur.
 
-Côté PC à réveiller : activez « Wake on LAN » dans le BIOS/UEFI et, sous Windows, dans *Gestionnaire de périphériques > carte réseau > Gestion de l'alimentation*. Si le PC est éteint (pas en veille), désactivez aussi le démarrage rapide de Windows. Le réveil fonctionne surtout en Ethernet. L'adresse MAC de ce PC est affichée dans **Paramètres > Réseau**.
+1. **Sur le PC à réveiller**, dans **Paramètres > Réveil (WoL)** : indiquez l'adresse de la box (de préférence un nom DynDNS) et le port UDP redirigé (9 par défaut). Si vous laissez l'adresse vide, BrickMote utilise l'IP publique vue par votre serveur relais. L'adresse MAC du PC est affichée au même endroit.
+2. **Dans la box** : redirigez ce port UDP vers le PC (ou vers l'adresse de diffusion du réseau, ex. 192.168.1.255), ou activez la fonction « Wake on LAN » de la box si elle en a une.
+3. **Sur le PC** : activez « Wake on LAN » dans le BIOS/UEFI et, sous Windows, dans *Gestionnaire de périphériques > carte réseau > Gestion de l'alimentation*. Si le PC est éteint (pas en veille), désactivez aussi le démarrage rapide de Windows. Préférez un câble Ethernet.
+
+Après une première session, le poste client a reçu (par le canal chiffré) l'adresse MAC, l'adresse de la box et le port. Le bouton ⏻ de la vignette suffit alors, et BrickMote propose aussi « Réveiller ce PC » quand une connexion échoue. Le bouton **Réveiller un PC**, sous la barre de connexion, permet une saisie manuelle : MAC, box, port, mot de passe SecureOn facultatif.
 
 ## Serveur relais (connexion par ID via Internet)
 

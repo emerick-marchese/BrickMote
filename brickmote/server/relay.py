@@ -190,7 +190,7 @@ class RelayServer:
         if old is not None:
             await close_writer(old.writer)
         log.info("device %s online from %s", device_id, ip)
-        await client.send({"t": "registered", "id": device_id})
+        await client.send({"t": "registered", "id": device_id, "addr": ip})
         try:
             while True:
                 req = await asyncio.wait_for(read_json(reader, MAX_CONTROL_FRAME), CONTROL_IDLE_TIMEOUT)

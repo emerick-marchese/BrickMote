@@ -70,6 +70,8 @@ class Settings:
     save_thumbnails: bool = True  # small preview of the remote screen in "Récents"
     # Wake-on-LAN: send this PC's MAC address to authorised viewers so they can wake it
     share_wol_info: bool = True
+    wol_box_address: str = ""  # public IP / DynDNS name of the box ("" = IP seen by the relay)
+    wol_box_port: int = 9  # UDP port forwarded by the box to this PC / the LAN
 
     def password_verifier(self) -> Optional[PasswordVerifier]:
         if not self.password:
@@ -100,6 +102,10 @@ class Settings:
             self.quality = "balanced"
         if self.theme not in ("dark", "light"):
             self.theme = "dark"
+        if not isinstance(self.wol_box_port, int) or not 0 < self.wol_box_port < 65536:
+            self.wol_box_port = 9
+        if not isinstance(self.wol_box_address, str):
+            self.wol_box_address = ""
         if self.device_view not in ("large", "small", "list"):
             self.device_view = "large"
         self.fps = max(1, min(60, int(self.fps))) if isinstance(self.fps, int) else 20

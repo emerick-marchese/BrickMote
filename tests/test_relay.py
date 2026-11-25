@@ -48,6 +48,7 @@ async def test_relay_end_to_end(relay, tmp_path):
     await _online(host)
     await _online(viewer)
     assert host.device_id == host_ident.device_id
+    assert host.public_ip is None  # seen from 127.0.0.1: not a public address
 
     reader, writer, pub = await viewer.connect_to(host_ident.device_id)
     assert pub == host_ident.public_bytes

@@ -144,6 +144,11 @@ class BrickMoteCore:
     def direct_port(self) -> Optional[int]:
         return self._direct_port
 
+    @property
+    def public_ip(self) -> Optional[str]:
+        """Public IPv4 of our box, as observed by the relay server (if any)."""
+        return self._relay.public_ip if self._relay is not None else None
+
     async def stop(self) -> None:
         for session in list(self.host_sessions) + list(self.viewer_sessions):
             await session.close("fermeture de BrickMote")
@@ -191,6 +196,9 @@ class BrickMoteCore:
                 wol = await asyncio.to_thread(local_wol_info)
             except Exception:  # noqa: BLE001 - best effort, never blocks a session
                 wol = None
+            if wol is not None:
+                wol["box"] = self.settings.wol_box_address.strip() or (self.public_ip or "")
+                wol["port"] = self.settings.wol_box_port
         session = HostSession(
             result,
             self.ui.host_events,

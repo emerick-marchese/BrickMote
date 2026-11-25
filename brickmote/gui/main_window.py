@@ -9,7 +9,6 @@ import time
 from typing import Optional
 
 import asyncio
-import ipaddress
 
 from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QGuiApplication, QImage, QPixmap
@@ -40,7 +39,7 @@ from .. import __version__
 from ..core import BrickMoteCore
 from ..util import format_id, normalize_id, secure_write
 from .bridge import CoreThread, PendingRequest, QtCoreUI
-from ..net.wol import WolError, send_magic_packet
+from ..net.wol import WolError, merge_wol, send_wake
 from .dialogs import AuditDialog, ChatDialog, HostSessionPanel, IncomingDialog, SettingsDialog, WakeDialog
 from .icons import icon, pixmap
 from .style import C, app_icon, avatar, logo, shadow
@@ -583,13 +582,8 @@ class MainWindow(QMainWindow):
         """A connected host told us its MAC: remember it for one-click wake."""
         if not normalize_id(dev) or not info:
             return
-        current = self._wol_of(dev) or {}
-        merged = {
-            "mac": info["mac"],
-            "address": current.get("address") or info.get("broadcast") or "255.255.255.255",
-            "port": current.get("port") or 9,
-            "secureon": current.get("secureon", ""),
-        }
+        current = self._wol_of(dev)
+        merged = merge_wol(current, info)
         if merged != current:
             self.core.known_hosts.set_wol(dev, merged)
             QTimer.singleShot(0, self._refresh_devices)
@@ -624,31 +618,26 @@ class MainWindow(QMainWindow):
             self._send_wake(dlg.values, dlg.values["mac"])
 
     def _send_wake(self, wol: dict, label: str):
-        address = wol.get("address") or "255.255.255.255"
-        extra: tuple[str, ...] = ()
-        try:
-            if ipaddress.IPv4Address(address).is_private:
-                extra = ("255.255.255.255",)  # also the generic broadcast, more robust on some OS
-        except ValueError:
-            pass
+        """Send the magic packet to the box (public address) and on the LAN."""
 
         def done(fut):
             try:
-                targets = fut.result()
-            except (WolError, OSError) as exc:
+                sent, errors = fut.result()
+            except (WolError, OSError, ValueError) as exc:
                 self.wake_result.emit(f"Réveil de {label} impossible : {exc}", False)
-            else:
-                self.wake_result.emit(
-                    f"Signal de réveil envoyé à {label} via {targets[0]}.\n"
-                    "Le démarrage peut prendre jusqu'à une minute.",
-                    True,
-                )
+                return
+            box = (wol.get("box") or "").strip()
+            via = []
+            if box and any(t.startswith(box + ":") for t in sent):
+                via.append(f"box {box}:{wol.get('port') or 9}")
+            if any(not (box and t.startswith(box + ":")) for t in sent):
+                via.append("réseau local")
+            text = f"Signal de réveil envoyé à {label} ({' + '.join(via)}).\nLe démarrage peut prendre jusqu'à une minute."
+            if errors:
+                text += "\nNon envoyé : " + " ; ".join(errors)
+            self.wake_result.emit(text, True)
 
-        fut = self.core_thread.submit(
-            asyncio.to_thread(
-                send_magic_packet, wol["mac"], address, int(wol.get("port") or 9), wol.get("secureon", ""), 3, extra
-            )
-        )
+        fut = self.core_thread.submit(asyncio.to_thread(send_wake, dict(wol)))
         fut.add_done_callback(done)
 
     # ------------------------------------------------------- toast
@@ -765,6 +754,7 @@ class MainWindow(QMainWindow):
             self.core.audit,
             self,
             clear_thumbnails=self.clear_thumbnails,
+            public_ip=self.core.public_ip or "",
         )
         if dlg.exec():
             new = dlg.result_settings()

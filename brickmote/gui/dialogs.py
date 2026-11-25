@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
+    QFrame,
     QSpinBox,
     QTabWidget,
     QTextEdit,
@@ -424,12 +426,12 @@ class AuditDialog(QDialog):
 
 
 class WakeDialog(QDialog):
-    """Like a phone Wake-on-LAN app: MAC, destination address, UDP port."""
+    """Like a phone Wake-on-LAN app: MAC, the box's public address, UDP port."""
 
     def __init__(self, parent=None, wol: Optional[dict] = None, device_label: str = "", can_save: bool = False):
         super().__init__(parent)
         self.setWindowTitle("Réveiller un PC (Wake-on-LAN)")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(520)
         self.action: Optional[str] = None
         self.values: dict = {}
         wol = wol or {}
@@ -438,29 +440,39 @@ class WakeDialog(QDialog):
         lay.addWidget(_label(f"<b>{_esc(title)}</b>", "CardTitle"))
         lay.addWidget(
             _label(
-                "BrickMote envoie un « paquet magique » sur le port UDP choisi. Le PC doit être relié "
-                "au secteur, avec le Wake-on-LAN activé dans son BIOS/UEFI et sa carte réseau.",
+                "BrickMote envoie le « paquet magique » à votre box, qui le transmet au PC, "
+                "exactement comme une appli de réveil sur téléphone.",
                 "Muted",
                 True,
             )
         )
         form = QFormLayout()
         self.mac = QLineEdit(wol.get("mac", ""), placeholderText="ex. 1C:69:7A:0B:12:EF")
-        self.address = QLineEdit(
-            wol.get("address", "") or "255.255.255.255", placeholderText="255.255.255.255, 192.168.1.255 ou mabox.fr"
-        )
+        form.addRow("Adresse MAC du PC", self.mac)
+        self.box = QLineEdit(wol.get("box", ""), placeholderText="IP publique ou nom DynDNS, ex. mabox.ddns.net")
+        form.addRow("Box (Internet)", self.box)
         self.port = QSpinBox(minimum=1, maximum=65535, value=int(wol.get("port", 9) or 9))
-        self.secureon = QLineEdit(wol.get("secureon", ""), placeholderText="facultatif (SecureOn)")
-        form.addRow("Adresse MAC", self.mac)
-        form.addRow("Adresse de destination", self.address)
+        self.port.setToolTip("Port UDP redirigé par la box vers le PC (souvent 9 ou 7)")
         form.addRow("Port UDP", self.port)
+        local_row = QHBoxLayout()
+        self.local = QCheckBox("Aussi sur le réseau local, diffusion :")
+        self.local.setChecked(bool(wol.get("local", True)))
+        self.address = QLineEdit(wol.get("address", "") or "255.255.255.255")
+        self.address.setMaximumWidth(170)
+        self.local.toggled.connect(self.address.setEnabled)
+        self.address.setEnabled(self.local.isChecked())
+        local_row.addWidget(self.local)
+        local_row.addWidget(self.address)
+        local_row.addStretch(1)
+        form.addRow("", local_row)
+        self.secureon = QLineEdit(wol.get("secureon", ""), placeholderText="facultatif (SecureOn)")
         form.addRow("Mot de passe", self.secureon)
         lay.addLayout(form)
         lay.addWidget(
             _label(
-                "Réseau local : laissez 255.255.255.255 (ou l'adresse de diffusion, ex. 192.168.1.255). "
-                "Depuis Internet : saisissez l'adresse publique ou le nom de votre box et redirigez-y "
-                "ce port UDP vers le réseau local, comme pour une appli de réveil sur téléphone.",
+                "Dans votre box : redirigez ce port UDP vers le PC (ou vers l'adresse de diffusion du réseau, "
+                "ex. 192.168.1.255), ou activez sa fonction « Wake on LAN » si elle en a une. "
+                "Depuis chez vous, l'envoi sur le réseau local suffit.",
                 "Small",
                 True,
             )
@@ -488,23 +500,29 @@ class WakeDialog(QDialog):
         lay.addLayout(row)
 
     def _finish(self, action: str):
-        from ..net.wol import WolError, format_mac, parse_secureon
+        from ..net.wol import WolError, check_host, format_mac, parse_secureon
 
         try:
             mac = format_mac(self.mac.text())
+            box = check_host(self.box.text())
             parse_secureon(self.secureon.text())
+            address = self.address.text().strip() or "255.255.255.255"
+            if self.local.isChecked():
+                check_host(address)
         except WolError as exc:
-            self.error.setText(str(exc).capitalize())
+            self.error.setText(str(exc)[:1].upper() + str(exc)[1:])
             return
-        address = self.address.text().strip() or "255.255.255.255"
-        if len(address) > 253 or any(c.isspace() for c in address):
-            self.error.setText("Adresse de destination invalide.")
+        if not box and not self.local.isChecked():
+            self.error.setText("Indiquez l'adresse de la box ou cochez le réseau local.")
             return
         self.values = {
             "mac": mac,
-            "address": address,
+            "box": box,
             "port": self.port.value(),
+            "local": self.local.isChecked(),
+            "address": address,
             "secureon": self.secureon.text().strip(),
+            "auto": False,
         }
         self.action = action
         self.accept()
@@ -562,6 +580,15 @@ class IdListEditor(QWidget):
         return out
 
 
+def _scrollable(widget: QWidget) -> QScrollArea:
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.NoFrame)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    area.setWidget(widget)
+    return area
+
+
 def _perm_group(title: str, perms: dict) -> tuple[QGroupBox, dict]:
     box = QGroupBox(title)
     lay = QVBoxLayout(box)
@@ -583,11 +610,13 @@ class SettingsDialog(QDialog):
         audit: AuditLog,
         parent=None,
         clear_thumbnails: Optional[Callable[[], None]] = None,
+        public_ip: str = "",
     ):
         super().__init__(parent)
         self._clear_thumbnails = clear_thumbnails
+        self._public_ip = public_ip
         self.setWindowTitle("BrickMote - Paramètres")
-        self.resize(640, 600)
+        self.resize(700, 640)
         self.s = copy.deepcopy(settings)
         self.device_id = device_id
         self.known = known
@@ -595,10 +624,14 @@ class SettingsDialog(QDialog):
         lay = QVBoxLayout(self)
         tabs = QTabWidget()
         lay.addWidget(tabs, 1)
-        tabs.addTab(self._general_tab(), "Général")
-        tabs.addTab(self._security_tab(), "Sécurité")
-        tabs.addTab(self._access_tab(), "Contrôle d'accès")
-        tabs.addTab(self._network_tab(), "Réseau")
+        for builder, title in (
+            (self._general_tab, "Général"),
+            (self._security_tab, "Sécurité"),
+            (self._access_tab, "Contrôle d'accès"),
+            (self._network_tab, "Réseau"),
+            (self._wake_tab, "Réveil (WoL)"),
+        ):
+            tabs.addTab(_scrollable(builder()), title)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         save, cancel = bb.button(QDialogButtonBox.Save), bb.button(QDialogButtonBox.Cancel)
         save.setText("Enregistrer")
@@ -749,8 +782,13 @@ class SettingsDialog(QDialog):
         dl.addRow("Port TCP", self.direct_port)
         dl.addRow(self.discovery)
         lay.addWidget(direct)
+        lay.addStretch(1)
+        return w
 
-        wake = QGroupBox("Réveil à distance (Wake-on-LAN)")
+    def _wake_tab(self):
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        wake = QGroupBox("Permettre de réveiller ce PC à distance")
         wl = QVBoxLayout(wake)
         self.share_wol = QCheckBox("Transmettre l'adresse MAC de ce PC aux postes autorisés (réveil en un clic)")
         self.share_wol.setChecked(self.s.share_wol_info)
@@ -765,7 +803,36 @@ class SettingsDialog(QDialog):
         else:
             text = "Adresse MAC de ce PC introuvable."
         wl.addWidget(_label(text, "Small", True))
+        box_form = QFormLayout()
+        self.wol_box = QLineEdit(self.s.wol_box_address)
+        self.wol_box.setPlaceholderText(
+            f"IP publique détectée : {self._public_ip}" if self._public_ip else "IP publique ou nom DynDNS, ex. mabox.ddns.net"
+        )
+        self.wol_port = QSpinBox(minimum=1, maximum=65535, value=self.s.wol_box_port)
+        box_form.addRow("Adresse de la box", self.wol_box)
+        box_form.addRow("Port UDP redirigé", self.wol_port)
+        wl.addLayout(box_form)
         wl.addWidget(
+            _label(
+                "Ces informations sont transmises aux postes autorisés pour qu'ils puissent réveiller ce PC "
+                "depuis Internet en passant par la box. Laissez l'adresse vide pour utiliser l'IP publique "
+                "vue par votre serveur relais ; préférez un nom DynDNS si votre IP change.",
+                "Small",
+                True,
+            )
+        )
+        lay.addWidget(wake)
+        prep = QGroupBox("À configurer une fois")
+        pl = QVBoxLayout(prep)
+        pl.addWidget(
+            _label(
+                "Box : redirigez le port UDP ci-dessus vers ce PC (ou vers l'adresse de diffusion du réseau), "
+                "ou activez la fonction « Wake on LAN » de la box si elle en a une.",
+                "Small",
+                True,
+            )
+        )
+        pl.addWidget(
             _label(
                 "Pour pouvoir réveiller ce PC : activez « Wake on LAN » dans le BIOS/UEFI et, sous Windows, "
                 "dans Gestionnaire de périphériques > carte réseau > Gestion de l'alimentation "
@@ -776,7 +843,7 @@ class SettingsDialog(QDialog):
                 True,
             )
         )
-        lay.addWidget(wake)
+        lay.addWidget(prep)
         lay.addStretch(1)
         return w
 
@@ -840,6 +907,14 @@ class SettingsDialog(QDialog):
         s.direct_port = self.direct_port.value()
         s.discovery_enabled = self.discovery.isChecked()
         s.share_wol_info = self.share_wol.isChecked()
+        from ..net.wol import WolError, check_host
+
+        try:
+            s.wol_box_address = check_host(self.wol_box.text())
+        except WolError as exc:
+            QMessageBox.warning(self, "BrickMote", f"Réveil à distance : {exc}.")
+            return
+        s.wol_box_port = self.wol_port.value()
         if s.acl_enabled and not s.acl:
             if QMessageBox.question(
                 self, "BrickMote", "La liste blanche est vide : plus aucun poste ne pourra se connecter. Continuer ?"

@@ -18,6 +18,8 @@ DEFAULT_PORT = 9
 DEFAULT_ADDRESS = "255.255.255.255"
 
 _HEX = re.compile(r"[^0-9A-Fa-f]")
+_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+_HOSTNAME = re.compile(rf"^(?=.{{1,253}}$){_LABEL}(?:\.{_LABEL})*\.?$")
 
 
 class WolError(ValueError):
@@ -74,6 +76,70 @@ def check_port(port: object) -> int:
     return port
 
 
+def check_host(text: object) -> str:
+    """Validate the box address: an IP address or a (DynDNS) host name. '' = none."""
+    if not isinstance(text, str):
+        raise WolError("adresse de la box invalide")
+    text = text.strip()
+    if not text:
+        return ""
+    try:
+        return str(ipaddress.ip_address(text.strip("[]")))
+    except ValueError:
+        pass
+    if _HOSTNAME.match(text):
+        return text.lower().rstrip(".")
+    raise WolError("adresse de la box invalide (IP publique ou nom, ex. mabox.ddns.net)")
+
+
+def wake_targets(wol: dict) -> list[str]:
+    """Destinations of a wake: the box (public address) first, then the LAN broadcast."""
+    targets: list[str] = []
+    box = (wol.get("box") or "").strip()
+    if box:
+        targets.append(box)
+    if wol.get("local", True):
+        for addr in (wol.get("address") or DEFAULT_ADDRESS, DEFAULT_ADDRESS):
+            if addr and addr not in targets:
+                targets.append(addr)
+    return targets
+
+
+def _send(packet: bytes, targets: list[str], port: int, repeat: int) -> tuple[list[str], list[str]]:
+    sent, errors = [], []
+    for addr in targets:
+        try:
+            infos = socket.getaddrinfo(addr, port, type=socket.SOCK_DGRAM)
+        except socket.gaierror as exc:
+            errors.append(f"{addr} : nom introuvable ({exc.strerror or exc})")
+            continue
+        family, _, _, _, sockaddr = infos[0]
+        try:
+            with socket.socket(family, socket.SOCK_DGRAM) as sock:
+                if family == socket.AF_INET:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                for _ in range(max(1, repeat)):
+                    sock.sendto(packet, sockaddr)
+            sent.append(f"{addr}:{port}")
+        except OSError as exc:
+            errors.append(f"{addr} : {exc.strerror or exc}")
+    return sent, errors
+
+
+def send_wake(wol: dict, repeat: int = 3) -> tuple[list[str], list[str]]:
+    """Send a wake for a stored configuration ({mac, box, port, address, local,
+    secureon}). Returns (destinations reached, errors)."""
+    packet = magic_packet(wol.get("mac", ""), wol.get("secureon", ""))
+    port = check_port(int(wol.get("port") or DEFAULT_PORT))
+    targets = wake_targets(wol)
+    if not targets:
+        raise WolError("aucune destination : renseignez l'adresse de la box ou activez le réseau local")
+    sent, errors = _send(packet, targets, port, repeat)
+    if not sent:
+        raise WolError("envoi impossible — " + " ; ".join(errors))
+    return sent, errors
+
+
 def send_magic_packet(
     mac: str,
     address: str = DEFAULT_ADDRESS,
@@ -94,24 +160,7 @@ def send_magic_packet(
         addr = (addr or "").strip()
         if addr and addr not in targets:
             targets.append(addr)
-    sent = []
-    errors = []
-    for addr in targets:
-        try:
-            infos = socket.getaddrinfo(addr, port, type=socket.SOCK_DGRAM)
-        except socket.gaierror as exc:
-            errors.append(f"{addr} : nom introuvable ({exc.strerror or exc})")
-            continue
-        family, _, _, _, sockaddr = infos[0]
-        try:
-            with socket.socket(family, socket.SOCK_DGRAM) as sock:
-                if family == socket.AF_INET:
-                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                for _ in range(max(1, repeat)):
-                    sock.sendto(packet, sockaddr)
-            sent.append(f"{addr}:{port}")
-        except OSError as exc:
-            errors.append(f"{addr} : {exc.strerror or exc}")
+    sent, errors = _send(packet, targets, port, repeat)
     if not sent:
         raise WolError("envoi impossible — " + " ; ".join(errors))
     return sent
@@ -175,4 +224,44 @@ def sanitize_wol(value: object) -> Optional[dict]:
         broadcast = str(ipaddress.IPv4Address(broadcast)) if broadcast else DEFAULT_ADDRESS
     except ValueError:
         broadcast = DEFAULT_ADDRESS
-    return {"mac": mac, "broadcast": broadcast}
+    try:
+        box = check_host(value.get("box") or "")
+    except WolError:
+        box = ""
+    port = value.get("port")
+    port = port if isinstance(port, int) and 1 <= port <= 65535 else DEFAULT_PORT
+    return {"mac": mac, "broadcast": broadcast, "box": box, "port": port}
+
+
+def merge_wol(current: Optional[dict], learned: dict) -> dict:
+    """Combine what a host told us with what we already have.
+
+    Settings the user edited by hand ("auto": False) are kept; only the MAC
+    address is refreshed. Otherwise the host's latest values win.
+    """
+    fresh = {
+        "mac": learned["mac"],
+        "address": learned.get("broadcast") or DEFAULT_ADDRESS,
+        "box": learned.get("box", ""),
+        "port": learned.get("port") or DEFAULT_PORT,
+        "local": True,
+        "secureon": "",
+        "auto": True,
+    }
+    if not current:
+        return fresh
+    if current.get("auto") is False:
+        return {**current, "mac": learned["mac"]}
+    return {**fresh, "secureon": current.get("secureon", ""), "local": current.get("local", True)}
+
+
+def public_ipv4(addr: object) -> Optional[str]:
+    """Return ``addr`` if it is a public IPv4 address (as seen by the relay)."""
+    if not isinstance(addr, str):
+        return None
+    addr = addr.removeprefix("::ffff:")
+    try:
+        ip = ipaddress.IPv4Address(addr)
+    except ValueError:
+        return None
+    return str(ip) if ip.is_global else None

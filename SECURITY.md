@@ -61,7 +61,8 @@ Chaque message est chiffré en AES-256-GCM avec le nonce `0⁴ ‖ compteur₆�
 ## Wake-on-LAN
 
 - Un paquet magique ne fait qu'allumer la machine : il ne donne **aucun accès**. Une connexion reste soumise à l'acceptation, ou au mot de passe et à la 2FA.
-- L'adresse MAC de l'hôte n'est transmise qu'aux postes **authentifiés et acceptés**, par le canal chiffré. On peut la désactiver dans Paramètres > Réseau.
+- L'adresse MAC de l'hôte, l'adresse de sa box et le port de réveil ne sont transmis qu'aux postes **authentifiés et acceptés**, par le canal chiffré. On peut désactiver ce partage dans Paramètres > Réveil (WoL).
+- L'IP publique utilisée par défaut est celle que **votre** serveur relais observe : aucun service tiers du type « quelle est mon IP » n'est contacté. Une adresse de box reçue d'un hôte est validée (IP ou nom DNS uniquement).
 - Une adresse MAC reçue est validée strictement, et l'adresse de diffusion annoncée par un hôte est ignorée si ce n'est pas une IPv4.
 - Le protocole Wake-on-LAN n'est pas authentifié par nature. Rediriger un port UDP de votre box vers le réseau local permet à n'importe qui sur Internet d'allumer le PC (sans pouvoir s'y connecter). Le mot de passe SecureOn, si la carte réseau le gère, limite ce risque.
 

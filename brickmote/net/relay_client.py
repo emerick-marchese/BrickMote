@@ -11,6 +11,7 @@ from ..constants import MAX_CONTROL_FRAME
 from ..crypto.identity import Identity
 from ..net.framing import FrameError, close_writer, read_json, write_json
 from ..net.tls import PinError, open_tls
+from ..net.wol import public_ipv4
 from ..util import b64d, b64e
 
 log = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ class RelayClient:
         self._stopped = False
         self.online = asyncio.Event()
         self.device_id: Optional[str] = None
+        self.public_ip: Optional[str] = None  # our box's public IPv4, as seen by the relay
 
     # ---------------------------------------------------------- lifecycle
     def start(self) -> None:
@@ -112,6 +114,7 @@ class RelayClient:
                 if reply.get("t") != "registered":
                     raise RelayError(str(reply.get("code", "unavailable")))
                 self.device_id = reply.get("id")
+                self.public_ip = public_ipv4(reply.get("addr"))
                 self._writer, self._port = writer, port
                 self.online.set()
                 backoff = 1.0

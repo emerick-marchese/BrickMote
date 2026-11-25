@@ -101,7 +101,12 @@ class HostSession(PeerSession):
             "fps": self.fps,
         }
         if self.wol_info:
-            info["wol"] = {"mac": self.wol_info.get("mac"), "broadcast": self.wol_info.get("broadcast")}
+            info["wol"] = {
+                "mac": self.wol_info.get("mac"),
+                "broadcast": self.wol_info.get("broadcast"),
+                "box": self.wol_info.get("box", ""),
+                "port": self.wol_info.get("port", 9),
+            }
         return info
 
     async def set_permissions(self, perms: dict) -> None:
