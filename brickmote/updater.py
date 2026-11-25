@@ -75,12 +75,17 @@ def is_newer(remote: str, local: str = __version__) -> bool:
 
 # --------------------------------------------------------------------- http
 def _ssl_context() -> ssl.SSLContext:
+    """System certificate store (Windows store, corporate proxies...) plus
+    the certifi bundle (needed by frozen macOS/Linux builds). Certificate and
+    host name verification always stay enabled."""
+    ctx = ssl.create_default_context()
     try:
         import certifi
 
-        return ssl.create_default_context(cafile=certifi.where())
-    except ImportError:
-        return ssl.create_default_context()
+        ctx.load_verify_locations(cafile=certifi.where())
+    except (ImportError, OSError):
+        pass
+    return ctx
 
 
 def _open(url: str, timeout: float = 30):
