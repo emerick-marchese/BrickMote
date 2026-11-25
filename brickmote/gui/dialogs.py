@@ -8,7 +8,7 @@ import time
 from typing import Callable, Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication, QImage, QPixmap
+from PySide6.QtGui import QGuiApplication, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -42,7 +42,7 @@ from ..crypto.password import (
 )
 from ..util import format_id, normalize_id
 from .bridge import PendingRequest
-from .style import draw_logo
+from .style import logo
 
 PERM_LABELS = {
     "control": "Contrôler la souris et le clavier",
@@ -85,9 +85,9 @@ class IncomingDialog(QDialog):
         peer = req.peer
         lay = QVBoxLayout(self)
         top = QHBoxLayout()
-        logo = QLabel()
-        logo.setPixmap(draw_logo(56))
-        top.addWidget(logo)
+        mark = QLabel()
+        mark.setPixmap(logo(56))
+        top.addWidget(mark)
         head = QVBoxLayout()
         head.addWidget(_label(f"<b>{_esc(peer.name)}</b> souhaite se connecter à ce poste", "CardTitle", True))
         head.addWidget(_label(f"ID {format_id(peer.device_id)} · {_esc(peer.address or '')}", "Muted"))
@@ -496,8 +496,13 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._access_tab(), "Contrôle d'accès")
         tabs.addTab(self._network_tab(), "Réseau")
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Save).setText("Enregistrer")
-        bb.button(QDialogButtonBox.Cancel).setText("Annuler")
+        save, cancel = bb.button(QDialogButtonBox.Save), bb.button(QDialogButtonBox.Cancel)
+        save.setText("Enregistrer")
+        save.setObjectName("Primary")
+        cancel.setText("Annuler")
+        for b in (save, cancel):
+            b.setIcon(QIcon())
+            b.setMinimumWidth(110)
         bb.accepted.connect(self._save)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)

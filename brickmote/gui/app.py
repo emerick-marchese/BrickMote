@@ -37,13 +37,14 @@ def main(argv=None) -> int:
     from ..core import BrickMoteCore
     from .bridge import CoreThread, QtCoreUI
     from .main_window import MainWindow
-    from .style import STYLESHEET, app_icon
+    from .style import app_icon, apply_font, stylesheet
 
     app = QApplication(sys.argv if argv is None else ["brickmote", *argv])
     app.setApplicationName("BrickMote")
     app.setOrganizationName("BrickMote")
     app.setStyle("Fusion")
-    app.setStyleSheet(STYLESHEET)
+    apply_font(app)
+    app.setStyleSheet(stylesheet())
     app.setWindowIcon(app_icon())
     app.setQuitOnLastWindowClosed(False)
 

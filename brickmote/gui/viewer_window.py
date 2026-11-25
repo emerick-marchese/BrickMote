@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QGuiApplication, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
     QComboBox,
@@ -13,8 +13,10 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QSizePolicy,
     QStackedWidget,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -24,7 +26,8 @@ from ..util import format_id
 from .bridge import CoreThread, QtSessionEvents
 from .dialogs import ChatDialog
 from .keymap import translate
-from .style import BRICK, draw_logo
+from .icons import icon, pixmap
+from .style import BRICK, logo as brand_logo
 
 _BUTTONS = {Qt.LeftButton: "left", Qt.RightButton: "right", Qt.MiddleButton: "middle"}
 
@@ -227,10 +230,10 @@ class ViewerWindow(QMainWindow):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.addStretch(1)
-        logo = QLabel()
-        logo.setPixmap(draw_logo(72))
-        logo.setAlignment(Qt.AlignCenter)
-        lay.addWidget(logo)
+        mark = QLabel()
+        mark.setPixmap(brand_logo(72))
+        mark.setAlignment(Qt.AlignCenter)
+        lay.addWidget(mark)
         self.wait_title = QLabel(f"Connexion à {self.target}…")
         self.wait_title.setObjectName("CardTitle")
         self.wait_title.setAlignment(Qt.AlignCenter)
@@ -248,46 +251,71 @@ class ViewerWindow(QMainWindow):
         return w
 
     def _make_toolbar(self):
-        tb = QToolBar("Session")
+        tb = QToolBar("Session", objectName="SessionBar")
         tb.setMovable(False)
+        tb.setIconSize(QSize(19, 19))
+        tb.setToolButtonStyle(Qt.ToolButtonIconOnly)
         self.addToolBar(tb)
-        tb.addAction(QAction("✕ Déconnecter", self, triggered=self.close))
+        tint, on = "#D1D5DB", "#FFFFFF"
+
+        def action(name, tip, slot=None, checkable=False, checked=False):
+            act = QAction(icon(name, tint, 19, active=on), tip, self)
+            act.setToolTip(tip)
+            act.setCheckable(checkable)
+            act.setChecked(checked)
+            if slot is not None:
+                (act.toggled if checkable else act.triggered).connect(slot)
+            tb.addAction(act)
+            return act
+
+        stop = QToolButton(objectName="Disconnect")
+        stop.setText(" Déconnecter")
+        stop.setIcon(icon("power", "#FFFFFF", 17))
+        stop.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        stop.setCursor(Qt.PointingHandCursor)
+        stop.clicked.connect(self.close)
+        tb.addWidget(stop)
         tb.addSeparator()
+
+        mon = QLabel()
+        mon.setPixmap(pixmap("devices", "#9AA1AD", 17))
+        mon.setToolTip("Écran distant affiché")
+        tb.addWidget(mon)
         self.monitor_box = QComboBox()
-        self.monitor_box.setMinimumWidth(120)
+        self.monitor_box.setMinimumWidth(130)
         self.monitor_box.setToolTip("Écran distant affiché")
         self.monitor_box.activated.connect(
             lambda i: self.send(lambda s, idx=self.monitor_box.itemData(i): s.set_monitor(idx))
         )
-        tb.addWidget(QLabel(" Écran "))
         tb.addWidget(self.monitor_box)
         self.quality_box = QComboBox()
+        self.quality_box.setToolTip("Qualité d'image")
         for key, text in (("low", "Rapide"), ("balanced", "Équilibrée"), ("high", "Haute qualité")):
             self.quality_box.addItem(text, key)
         self.quality_box.setCurrentIndex(1)
         self.quality_box.activated.connect(
             lambda i: self.send(lambda s, q=self.quality_box.itemData(i): s.set_quality(q))
         )
-        tb.addWidget(QLabel(" Qualité "))
         tb.addWidget(self.quality_box)
         tb.addSeparator()
-        self.act_view_only = QAction("Lecture seule", self, checkable=True)
-        self.act_view_only.toggled.connect(self._toggle_view_only)
-        tb.addAction(self.act_view_only)
-        self.act_clip = QAction("Presse-papiers", self, checkable=True, checked=True)
-        self.act_clip.toggled.connect(lambda on: setattr(self, "clip_sync", on))
-        tb.addAction(self.act_clip)
-        self.act_fit = QAction("Ajuster", self, checkable=True, checked=True)
-        self.act_fit.toggled.connect(self._toggle_fit)
-        tb.addAction(self.act_fit)
+        self.act_view_only = action("eye", "Lecture seule (ne pas envoyer la souris ni le clavier)", self._toggle_view_only, True)
+        self.act_clip = action("clipboard", "Synchroniser le presse-papiers", lambda on: setattr(self, "clip_sync", on), True, True)
+        self.act_fit = action("fit", "Ajuster l'image à la fenêtre", self._toggle_fit, True, True)
         tb.addSeparator()
-        self.act_file = QAction("Fichier…", self, triggered=self._send_file)
-        self.act_file.setToolTip("Envoyer un fichier au poste distant")
-        tb.addAction(self.act_file)
-        tb.addAction(QAction("Chat", self, triggered=self._open_chat))
-        tb.addAction(QAction("Ctrl+Alt+Suppr", self, triggered=self._send_cad))
-        tb.addAction(QAction("Actualiser", self, triggered=lambda: self.send(lambda s: s.refresh())))
-        tb.addAction(QAction("Plein écran", self, triggered=self._toggle_fullscreen))
+        self.act_file = action("file", "Envoyer un fichier au poste distant", self._send_file)
+        action("chat", "Ouvrir le chat", self._open_chat)
+        action("keyboard", "Envoyer Ctrl+Alt+Suppr", self._send_cad)
+        action("refresh", "Rafraîchir l'image", lambda: self.send(lambda s: s.refresh()))
+        action("fullscreen", "Plein écran", self._toggle_fullscreen)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        tb.addWidget(spacer)
+        lock = QLabel()
+        lock.setPixmap(pixmap("lock", "#9AA1AD", 15))
+        tb.addWidget(lock)
+        self.sas_label = QLabel(" Chiffré de bout en bout ")
+        self.sas_label.setToolTip("Le code de sécurité doit être identique sur les deux écrans")
+        tb.addWidget(self.sas_label)
 
     # ------------------------------------------------------- networking
     def send(self, fn) -> None:
@@ -335,6 +363,7 @@ class ViewerWindow(QMainWindow):
         self.setWindowTitle(f"BrickMote - {peer.name} ({format_id(peer.device_id)})")
         self.stack.setCurrentWidget(self.screen)
         self.screen.setFocus()
+        self.sas_label.setText(f" Code de sécurité  {session.sas} ")
         self._stats.start()
         self._on_permissions(session, session.permissions)
 
@@ -371,7 +400,7 @@ class ViewerWindow(QMainWindow):
         perms = self.session.permissions
         mode = "Lecture seule" if (self.view_only or not perms.get("control")) else "Contrôle"
         self.status_label.setText(
-            f"🔒 Chiffré de bout en bout · Code de sécurité {self.session.sas} · {mode} · "
+            f"{self.session.peer.name} · {mode} · "
             f"{fps:.0f} img/s · {kbps:,.0f} kbit/s".replace(",", " ")
         )
 
