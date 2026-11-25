@@ -82,6 +82,7 @@ REJECT_MESSAGES = {
     "host_key_rejected": "Identité du poste distant non approuvée.",
     "rate_limited": "Trop de tentatives de connexion. Réessayez plus tard.",
     "cancelled": "Connexion annulée.",
+    "password_offered": "Ce poste accepte une connexion par mot de passe.",
 }
 
 
@@ -89,6 +90,8 @@ class HandshakeError(Exception):
     def __init__(self, code: str, detail: str = ""):
         self.code = code
         self.detail = detail
+        self.peer: Optional["PeerInfo"] = None  # set for "password_offered"
+        self.interactive_ok = False
         super().__init__(detail or REJECT_MESSAGES.get(code, code))
 
     @property
@@ -285,7 +288,17 @@ async def initiator_handshake(
     get_totp: Optional[Callable[[PeerInfo], Awaitable[Optional[str]]]] = None,
     on_waiting: Optional[Callable[[PeerInfo, str], None]] = None,
     address: Optional[str] = None,
+    saved_secret: Optional[tuple] = None,
 ) -> HandshakeResult:
+    """``want``: "password", "interactive", "auto" (password if one is given)
+    or "ask": if the host accepts a password and we have none, stop right
+    after authenticating the host and raise ``HandshakeError("password_offered")``
+    so the caller can ask the user, then reconnect. The host user never sees
+    that first attempt.
+
+    ``saved_secret``: (public scrypt parameters, derived secret) remembered from
+    a previous connection; used instead of the password if the host's
+    parameters still match (i.e. its password did not change)."""
     io = _HandshakeIO(reader, writer)
     try:
         eph, hello = _hello()
@@ -314,11 +327,23 @@ async def initiator_handshake(
 
         offered = host_msg.get("auth")
         offered = [m for m in offered if isinstance(m, str)] if isinstance(offered, list) else []
-        if want == METHOD_PASSWORD or (want == "auto" and password):
+        pw_params = host_msg.get("pw")
+        secret = None
+        if saved_secret is not None and isinstance(pw_params, dict) and saved_secret[0] == pw_params:
+            secret = saved_secret[1]
+        if want == "ask" and METHOD_PASSWORD in offered and not password and secret is None:
+            err = HandshakeError("password_offered")
+            err.peer = peer
+            err.interactive_ok = METHOD_INTERACTIVE in offered
+            raise err
+        if want == METHOD_PASSWORD or (want in ("auto", "ask") and (password or secret is not None)):
             if METHOD_PASSWORD not in offered:
                 raise HandshakeError("no_unattended")
-            if not password:
-                raise HandshakeError("auth_failed")
+            if not password and secret is None:
+                err = HandshakeError("password_offered")  # saved password no longer valid
+                err.peer = peer
+                err.interactive_ok = METHOD_INTERACTIVE in offered
+                raise err
             method = METHOD_PASSWORD
         else:
             if METHOD_INTERACTIVE not in offered:
@@ -329,10 +354,11 @@ async def initiator_handshake(
         viewer_msg = {"t": "viewer", "ik": b64e(identity.public_bytes), "name": name[:64], "method": method}
         spake = None
         if method == METHOD_PASSWORD:
-            try:
-                secret = await asyncio.to_thread(derive_secret_from_params, password, host_msg.get("pw"))
-            except (ValueError, TypeError) as exc:
-                raise HandshakeError("protocol", "bad password parameters") from exc
+            if secret is None:
+                try:
+                    secret = await asyncio.to_thread(derive_secret_from_params, password, pw_params)
+                except (ValueError, TypeError) as exc:
+                    raise HandshakeError("protocol", "bad password parameters") from exc
             spake = SPAKE2_A(secret, **_spake_ids(identity.public_bytes, host_pub))
             viewer_msg["spake"] = b64e(spake.start())
         await io.send(viewer_msg)
@@ -368,7 +394,8 @@ async def initiator_handshake(
         permissions = sanitize_permissions(accept.get("perms"))
         keys = _hkdf(shared + k_spake, io.transcript.digest(), b"BrickMote v1 session", 64)
         channel = io.session_channel(send_key=keys[:32], recv_key=keys[32:])
-        return HandshakeResult(channel, peer, permissions, method, sas)
+        extra = {"pw_secret": (dict(pw_params), secret)} if method == METHOD_PASSWORD else {}
+        return HandshakeResult(channel, peer, permissions, method, sas, extra)
     except HandshakeError:
         raise
     except asyncio.TimeoutError as exc:

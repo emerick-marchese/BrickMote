@@ -232,6 +232,7 @@ class DeviceBrowser(QWidget):
     view_changed = Signal(str)
     wake_requested = Signal(str)
     wake_settings_requested = Signal(str)
+    forget_password_requested = Signal(str)
 
     TABS = (("recent", "Récents"), ("favorites", "Favoris"), ("lan", "Réseau local"))
     EMPTY = {
@@ -311,8 +312,9 @@ class DeviceBrowser(QWidget):
             self.view_changed.emit(view)
             self._rebuild()
 
-    def set_data(self, known: dict, lan: dict, thumb: ThumbFn) -> None:
+    def set_data(self, known: dict, lan: dict, thumb: ThumbFn, saved: Optional[set] = None) -> None:
         self._known, self._lan, self._thumb = known, lan, thumb
+        self._saved = set(saved or ())
         counts = {
             "recent": len(known),
             "favorites": sum(1 for e in known.values() if e.get("favorite")),
@@ -408,6 +410,12 @@ class DeviceBrowser(QWidget):
                 lambda: self.wake_settings_requested.emit(dev),
             )
         menu.addAction(icon("copy", C["INK"], 16), "Copier l'ID", lambda: _copy(dev))
+        if dev in getattr(self, "_saved", set()):
+            menu.addAction(
+                icon("lock", C["INK"], 16),
+                "Oublier le mot de passe enregistré",
+                lambda: self.forget_password_requested.emit(dev),
+            )
         if entry is not None:
             menu.addSeparator()
             menu.addAction(icon("trash", C["DANGER"], 16), "Oublier ce poste", lambda: self.forget_requested.emit(dev))

@@ -44,7 +44,15 @@ from ..util import format_id, normalize_id, secure_write
 from .bridge import CoreThread, PendingRequest, QtCoreUI
 from .. import updater
 from ..net.wol import WolError, merge_wol, send_wake
-from .dialogs import AuditDialog, ChatDialog, HostSessionPanel, IncomingDialog, SettingsDialog, WakeDialog
+from .dialogs import (
+    AuditDialog,
+    ChatDialog,
+    HostSessionPanel,
+    IncomingDialog,
+    PasswordPromptDialog,
+    SettingsDialog,
+    WakeDialog,
+)
 from .icons import icon, pixmap
 from .style import C, app_icon, avatar, logo, shadow
 from .viewer_window import ViewerWindow
@@ -264,6 +272,10 @@ class MainWindow(QMainWindow):
         self.password.setMaximumWidth(260)
         self.password.setVisible(False)
         opt.addWidget(self.password)
+        self.chk_remember = QCheckBox("Mémoriser")
+        self.chk_remember.setToolTip("Mémoriser le mot de passe de ce poste sur ce PC")
+        self.chk_remember.setVisible(False)
+        opt.addWidget(self.chk_remember)
         opt.addStretch(1)
         self.btn_wake = QPushButton("  Réveiller un PC", objectName="WakeLink")
         self.btn_wake.setIcon(icon("power", C["MUTED"], 16))
@@ -368,6 +380,7 @@ class MainWindow(QMainWindow):
         self.browser.rename_requested.connect(self._rename)
         self.browser.forget_requested.connect(self._forget)
         self.browser.view_changed.connect(self._set_view)
+        self.browser.forget_password_requested.connect(self._forget_password)
         self.browser.wake_requested.connect(self._wake_device)
         self.browser.wake_settings_requested.connect(self._wake_settings)
         self.btn_wake.clicked.connect(self._wake_manual)
@@ -409,6 +422,7 @@ class MainWindow(QMainWindow):
 
     def _toggle_password(self, on: bool):
         self.password.setVisible(on)
+        self.chk_remember.setVisible(on)
         if on:
             self.password.setFocus()
 
@@ -521,7 +535,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_devices(self):
         known = {k: v for k, v in self.core.known_hosts.entries().items() if isinstance(v, dict)}
-        self.browser.set_data(known, dict(self._lan_peers), self._thumbnail)
+        self.browser.set_data(known, dict(self._lan_peers), self._thumbnail, self.core.saved_passwords.devices())
 
     # ----------------------------------------------------- thumbnails
     def _thumb_path(self, device_id: str):
@@ -598,6 +612,7 @@ class MainWindow(QMainWindow):
             == QMessageBox.Yes
         ):
             self.core.known_hosts.forget(dev)
+            self.core.saved_passwords.forget(dev)
             path = self._thumb_path(dev)
             if path is not None:
                 try:
@@ -771,6 +786,11 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self._place_toast()
 
+    def _forget_password(self, dev: str):
+        self.core.saved_passwords.forget(dev)
+        self.show_toast(f"Mot de passe de {self._label_of(dev)} oublié.")
+        self._refresh_devices()
+
     def _set_view(self, view: str):
         self.core.settings.device_view = view
         self.core_thread.submit(_call(self.core.save_settings))
@@ -903,7 +923,7 @@ class MainWindow(QMainWindow):
         win.destroyed.connect(lambda *_: QTimer.singleShot(0, self._refresh_devices))
         self._viewers.append(win)
         win.show()
-        win.connect_with(self.core, password)
+        win.connect_with(self.core, password, remember=bool(password) and self.chk_remember.isChecked())
         self.password.clear()
 
     # ====================================================== user questions
@@ -919,6 +939,9 @@ class MainWindow(QMainWindow):
             QApplication.alert(dlg, 0)
             if self.tray:
                 self.tray.showMessage("BrickMote", f"{req.peer.name} demande à se connecter à ce poste")
+        elif req.kind == "password":
+            dlg = PasswordPromptDialog(req)
+            self._show_request_dialog(req, dlg)
         elif req.kind == "totp":
             dlg = QInputDialog()
             dlg.setWindowTitle("BrickMote - Double authentification")

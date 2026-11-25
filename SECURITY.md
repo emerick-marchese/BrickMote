@@ -58,6 +58,13 @@ Chaque message est chiffré en AES-256-GCM avec le nonce `0⁴ ‖ compteur₆�
 - Mise en relation : chaque partie ouvre une connexion de données et signe `défi ‖ jeton`. Seules les deux clés attendues sont acceptées.
 - Le relais connaît les métadonnées : ID, adresses IP, horaires et volume des sessions. Il ne connaît ni le contenu, ni les noms des postes, ni les mots de passe.
 
+## Mots de passe mémorisés (poste client)
+
+- Le mot de passe lui-même n'est jamais enregistré. Seul est conservé le secret dérivé pour **un** poste (scrypt avec le sel de ce poste), c'est-à-dire ce qu'utilise l'échange SPAKE2. Il ne permet de se connecter qu'à ce poste et ne révèle pas le mot de passe, qui peut servir ailleurs.
+- Windows : ce secret est chiffré par DPAPI (lié au compte Windows) dans `saved_passwords.json`. Autres systèmes : fichier lisible par le seul propriétaire (0600).
+- Si le mot de passe du poste change, la clé mémorisée ne correspond plus : elle est effacée et le mot de passe est redemandé. Le menu ⋮ du poste permet aussi de l'oublier.
+- Quand le client doit demander le mot de passe, il interrompt la première connexion juste après avoir authentifié le poste. La personne devant le poste distant ne voit donc aucune demande pendant la saisie.
+
 ## Serveur relais par défaut
 
 - Son adresse est intégrée à la compilation depuis des secrets GitHub : elle n'est **jamais dans le code source public**, ni dans les journaux de compilation (GitHub masque les secrets).

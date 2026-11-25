@@ -147,6 +147,9 @@ class QtCoreUI:
     async def confirm_new_host(self, peer: PeerInfo) -> bool:
         return bool(await self._ask("trust", peer))
 
+    async def ask_password(self, peer: PeerInfo, interactive_ok: bool):
+        return await self._ask("password", peer, interactive_ok=interactive_ok)
+
     def relay_status(self, state: str, detail: str) -> None:
         self.last_relay_status = (state, detail)
         self.sig.relay_status.emit(state, detail)

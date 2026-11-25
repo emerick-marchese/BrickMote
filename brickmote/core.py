@@ -8,6 +8,7 @@ import logging
 import re
 from typing import Awaitable, Callable, Optional, Protocol
 
+from .credentials import SavedPasswords
 from .config import AuditLog, KnownHosts, Paths, Settings, downloads_dir
 from .constants import DIRECT_PORT
 from .crypto.handshake import (
@@ -42,6 +43,7 @@ class CoreUI(Protocol):
     async def prompt_incoming(self, peer: PeerInfo, sas: str) -> Optional[dict]: ...
     async def ask_totp(self, peer: PeerInfo) -> Optional[str]: ...
     async def confirm_new_host(self, peer: PeerInfo) -> bool: ...
+    async def ask_password(self, peer: PeerInfo, interactive_ok: bool) -> Optional[dict]: ...
     def relay_status(self, state: str, detail: str) -> None: ...
     def host_session_started(self, session: HostSession) -> None: ...
     def lan_peers_changed(self, peers: dict) -> None: ...
@@ -74,6 +76,7 @@ class BrickMoteCore:
         self.identity = Identity.load_or_create(paths.identity)
         self.settings = Settings.load(paths.settings)
         self.known_hosts = KnownHosts(paths.known_hosts)
+        self.saved_passwords = SavedPasswords(paths.saved_passwords)
         self.audit = AuditLog(paths.audit)
         self.policy = HostPolicy(self.identity, lambda: self.settings, self.audit, prompt=ui.prompt_incoming)
         self.host_sessions: set[HostSession] = set()
@@ -294,13 +297,61 @@ class BrickMoteCore:
         password: Optional[str],
         events: SessionEvents,
         on_waiting: Optional[Callable[[PeerInfo, str], None]] = None,
+        remember: bool = False,
     ) -> ViewerSession:
         try:
-            return await self._connect(target, password, events, on_waiting)
+            return await self._connect(target, password, events, on_waiting, remember)
         except (OSError, asyncio.TimeoutError) as exc:
             raise ConnectError(f"Connexion impossible : {exc or exc.__class__.__name__}") from exc
 
-    async def _connect(self, target, password, events, on_waiting) -> ViewerSession:
+    async def _connect(self, target, password, events, on_waiting, remember) -> ViewerSession:
+        """Authentication strategy:
+        1. explicit password, else a password remembered for this device;
+        2. otherwise, if the host accepts a password, ask the user (password,
+           or "ask for authorisation" when the host also accepts that);
+        3. a remembered password that no longer works is forgotten and the
+           user is asked again."""
+        hint = normalize_id(target)
+        saved = self.saved_passwords.get(hint) if hint and not password else None
+        saved_id = hint if saved is not None else None
+        tried_saved = saved is not None
+        want = "password" if password else "ask"
+        for _ in range(5):
+            try:
+                session, result = await self._connect_routes(target, events, on_waiting, password, want, saved)
+            except HandshakeError as exc:
+                if exc.code == "password_offered" and exc.peer is not None:
+                    if saved is not None:  # the host's password changed: forget the old one
+                        self.saved_passwords.forget(exc.peer.device_id)
+                        saved = None
+                    elif not tried_saved and not password:
+                        # connected by IP address: we only learn the device ID now
+                        tried_saved = True
+                        candidate = self.saved_passwords.get(exc.peer.device_id)
+                        if candidate is not None:
+                            saved, saved_id = candidate, exc.peer.device_id
+                            continue
+                    answer = await self.ui.ask_password(exc.peer, exc.interactive_ok)
+                    if not answer:
+                        raise ConnectError("Connexion annulée.") from exc
+                    if answer.get("interactive"):
+                        password, want = None, "interactive"
+                    else:
+                        password, want = answer.get("password") or None, "password"
+                        remember = bool(answer.get("remember"))
+                    continue
+                if exc.code == "auth_failed" and saved is not None and not password:
+                    self.saved_passwords.forget(saved_id)  # remembered password refused: ask again
+                    saved, want = None, "ask"
+                    continue
+                raise ConnectError(exc.user_message) from exc
+            if remember and result.extra.get("pw_secret"):
+                params, secret = result.extra["pw_secret"]
+                self.saved_passwords.save(result.peer.device_id, params, secret)
+            return session
+        raise ConnectError("Connexion impossible.")
+
+    async def _connect_routes(self, target, events, on_waiting, password, want, saved):
         last_error: Optional[Exception] = None
         async for reader, writer, expected_id, expected_pub, address in self._routes(target):
 
@@ -324,17 +375,18 @@ class BrickMoteCore:
                     expected_public=expected_pub,
                     verify_host=verify,
                     password=password or None,
-                    want="password" if password else "interactive",
+                    want=want,
                     get_totp=self.ui.ask_totp,
                     on_waiting=on_waiting,
                     address=address,
+                    saved_secret=saved,
                 )
             except HandshakeError as exc:
                 await close_writer(writer)
                 if exc.code in ("protocol", "timeout") and expected_id and address != "relais":
                     last_error = exc  # stale LAN entry: try next route
                     continue
-                raise ConnectError(exc.user_message) from exc
+                raise
             except (OSError, ConnectionError) as exc:
                 await close_writer(writer)
                 last_error = exc
@@ -351,5 +403,5 @@ class BrickMoteCore:
                     self.viewer_sessions.discard(s)
 
             asyncio.get_running_loop().create_task(runner())
-            return session
+            return session, result
         raise ConnectError(f"Connexion impossible : {last_error}" if last_error else "Connexion impossible.")

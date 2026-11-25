@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import sys
 import io
 import time
 from typing import Callable, Optional
@@ -419,6 +420,88 @@ class AuditDialog(QDialog):
         bb = QDialogButtonBox(QDialogButtonBox.Close)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
+
+
+# --------------------------------------------------------------------------
+# Password prompt (viewer side)
+# --------------------------------------------------------------------------
+
+
+class PasswordPromptDialog(QDialog):
+    """The remote computer accepts unattended access: ask for its password."""
+
+    def __init__(self, req: PendingRequest, parent=None):
+        super().__init__(parent)
+        self.req = req
+        self.answered = False
+        peer = req.peer
+        interactive_ok = bool(req.extra.get("interactive_ok"))
+        self.setWindowTitle("BrickMote - Mot de passe")
+        self.setWindowFlags(Qt.Dialog | Qt.WindowStaysOnTopHint | Qt.WindowTitleHint)
+        self.setMinimumWidth(440)
+        lay = QVBoxLayout(self)
+        top = QHBoxLayout()
+        mark = QLabel()
+        mark.setPixmap(logo(44))
+        top.addWidget(mark)
+        head = QVBoxLayout()
+        head.addWidget(_label(f"<b>{_esc(peer.name)}</b>", "CardTitle"))
+        head.addWidget(_label(f"ID {format_id(peer.device_id)}", "Muted"))
+        top.addLayout(head, 1)
+        lay.addLayout(top)
+        text = "Ce poste accepte l'accès sans surveillance. Saisissez son mot de passe"
+        text += " ou demandez l'autorisation à la personne devant l'écran." if interactive_ok else "."
+        lay.addWidget(_label(text, "Muted", True))
+        self.password = QLineEdit(echoMode=QLineEdit.Password, placeholderText="Mot de passe du poste distant")
+        self.password.setMinimumHeight(36)
+        lay.addWidget(self.password)
+        self.remember = QCheckBox("Mémoriser le mot de passe sur ce PC")
+        lay.addWidget(self.remember)
+        lay.addWidget(
+            _label(
+                "Seule une clé dérivée, valable uniquement pour ce poste, est conservée "
+                + ("(chiffrée par Windows pour votre compte). " if sys.platform.startswith("win")
+                   else "(lisible uniquement par votre compte). ")
+                + "Elle est oubliée si le mot de passe du poste change.",
+                "Small",
+                True,
+            )
+        )
+        row = QHBoxLayout()
+        if interactive_ok:
+            ask = _button("Demander l'autorisation")
+            ask.clicked.connect(lambda: self._finish({"interactive": True}))
+            row.addWidget(ask)
+        row.addStretch(1)
+        cancel = _button("Annuler")
+        cancel.clicked.connect(self.close)
+        row.addWidget(cancel)
+        self.ok = _button("Se connecter", "Primary")
+        self.ok.setDefault(True)
+        self.ok.setEnabled(False)
+        self.ok.clicked.connect(self._connect)
+        row.addWidget(self.ok)
+        lay.addLayout(row)
+        self.password.textChanged.connect(lambda t: self.ok.setEnabled(bool(t)))
+        self.password.returnPressed.connect(self._connect)
+        self.password.setFocus()
+
+    def _connect(self):
+        if self.password.text():
+            self._finish({"password": self.password.text(), "remember": self.remember.isChecked()})
+
+    def _finish(self, answer):
+        if not self.answered:
+            self.answered = True
+            self.req.answer(answer)
+        self.password.clear()
+        self.close()
+
+    def closeEvent(self, event):
+        if not self.answered:
+            self.answered = True
+            self.req.answer(None)
+        super().closeEvent(event)
 
 
 # --------------------------------------------------------------------------

@@ -231,3 +231,4 @@ class Paths:
         self.known_hosts = self.base / "known_hosts.json"
         self.audit = self.base / "audit.log"
         self.thumbnails = self.base / "thumbnails"
+        self.saved_passwords = self.base / "saved_passwords.json"

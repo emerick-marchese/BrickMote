@@ -330,12 +330,12 @@ class ViewerWindow(QMainWindow):
     def can_control(self) -> bool:
         return bool(self.session and self.session.permissions.get("control"))
 
-    def connect_with(self, core, password: Optional[str]) -> None:
+    def connect_with(self, core, password: Optional[str], remember: bool = False) -> None:
         def waiting(peer, sas):
             self.events.sig.waiting.emit(peer, sas)
 
         self._connect_future = self.core_thread.submit(
-            core.connect(self.target, password, self.events, on_waiting=waiting)
+            core.connect(self.target, password, self.events, on_waiting=waiting, remember=remember)
         )
         self._connect_future.add_done_callback(self.events.sig.connect_result.emit)
 
