@@ -154,7 +154,7 @@ class DeviceCard(QFrame):
         arrow = QLabel()
         arrow.setPixmap(pixmap("arrow", MUTED, 18))
         lay.addWidget(arrow, alignment=Qt.AlignVCenter)
-        shadow(self, blur=18, dy=3, alpha=14)
+        shadow(self, blur=8, dy=1, alpha=12)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):

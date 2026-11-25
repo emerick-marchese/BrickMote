@@ -207,7 +207,7 @@ class MainWindow(QMainWindow):
 
         # connect bar
         bar = QFrame(objectName="ConnectBar")
-        shadow(bar, blur=34, dy=8, alpha=24)
+        shadow(bar, blur=12, dy=1, alpha=18)
         bl = QVBoxLayout(bar)
         bl.setContentsMargins(18, 12, 12, 12)
         bl.setSpacing(8)
@@ -242,7 +242,7 @@ class MainWindow(QMainWindow):
         top = QHBoxLayout()
         top.setSpacing(18)
         hero = QFrame(objectName="Hero")
-        shadow(hero, blur=36, dy=10, alpha=60)
+        shadow(hero, blur=12, dy=2, alpha=40)
         hl = QVBoxLayout(hero)
         hl.setContentsMargins(26, 22, 26, 22)
         hl.setSpacing(6)
@@ -341,7 +341,7 @@ class MainWindow(QMainWindow):
         self.activity = QListWidget()
         self.activity.setMinimumHeight(240)
         self.activity.setFocusPolicy(Qt.NoFocus)
-        shadow(self.activity, blur=18, dy=3, alpha=12)
+        shadow(self.activity, blur=8, dy=1, alpha=12)
         lay.addWidget(self.activity)
         lay.addStretch(1)
         return area

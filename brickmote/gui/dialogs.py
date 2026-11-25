@@ -219,7 +219,7 @@ class HostSessionPanel(QWidget):
         self.session = session
         peer = session.peer
         self.setWindowTitle("BrickMote - Session active")
-        self.setStyleSheet("QWidget#Panel { background: white; border: 2px solid #C8423B; border-radius: 8px; }")
+        self.setStyleSheet("QWidget#Panel { background: white; border: 1px solid #D2463C; border-top: 4px solid #D2463C; border-radius: 0; }")
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         panel = QWidget(objectName="Panel")
