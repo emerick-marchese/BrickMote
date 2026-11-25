@@ -92,6 +92,9 @@ class Recorder(SessionEvents):
     def on_frame(self, s, fid, w, h, cursor, rects):
         self._put("frame", fid, w, h, cursor, rects)
 
+    def on_status(self, s, status):
+        self._put("status", status)
+
     async def wait_for(self, kind, timeout=10):
         while True:
             item = await asyncio.wait_for(self.events.get(), timeout)
@@ -322,5 +325,66 @@ async def test_viewport_limits_the_frame_size(tmp_path, monkeypatch):
             break
     assert (frame[2], frame[3]) == (640, 400)
     await viewer.set_quality("max")
+    await viewer.close()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_lock_screen_is_reported_to_the_viewer(tmp_path, monkeypatch):
+    import brickmote.host.session as host_mod
+
+    locked = {"on": False}
+    monkeypatch.setattr(host_mod, "session_locked", lambda: locked["on"])
+    host, viewer, hrec, vrec, tasks = await make_sessions(tmp_path)
+    await vrec.wait_for("frame")
+    locked["on"] = True
+    assert (await vrec.wait_for("status"))[1] == "locked"
+    locked["on"] = False
+    assert (await vrec.wait_for("status"))[1] == "ok"
+    await vrec.wait_for("frame")  # the image comes back by itself
+    await viewer.close()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_broken_capture_is_recreated(tmp_path):
+    host, viewer, hrec, vrec, tasks = await make_sessions(tmp_path)
+    await vrec.wait_for("frame")
+    created = []
+    original = host._capture_factory
+
+    class Broken(FakeCapture):
+        def grab(self, index):
+            raise OSError("BitBlt failed")
+
+    def factory():
+        created.append(1)
+        return original() if len(created) > 3 else Broken()
+
+    host._capture_factory = factory
+    host._capture_exec.submit(host._close_capture).result()
+    statuses = []
+    while True:
+        item = await vrec.wait_for("status")
+        statuses.append(item[1])
+        if item[1] == "ok":
+            break
+    assert statuses == ["unavailable", "ok"] and len(created) >= 4
+    await vrec.wait_for("frame")
+    await viewer.close()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_key_releases_are_never_dropped(tmp_path):
+    import brickmote.host.session as host_mod
+
+    host, viewer, hrec, vrec, tasks = await make_sessions(tmp_path)
+    await vrec.wait_for("frame")
+    with host._pending_lock:
+        host._pending_input = host_mod.MAX_PENDING_INPUT  # simulate a flood
+    ran = []
+    host._inject(lambda: ran.append("press"))
+    host._inject(lambda: ran.append("release"), droppable=False)
+    host._input_exec.submit(lambda: None).result()
+    assert ran == ["release"]
+    assert host._pending_input == host_mod.MAX_PENDING_INPUT  # back to where it was: no drift
     await viewer.close()
     await asyncio.gather(*tasks, return_exceptions=True)

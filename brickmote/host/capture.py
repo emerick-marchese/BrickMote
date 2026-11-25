@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import struct
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Optional, Protocol
@@ -107,6 +108,39 @@ FRAME_HEADER = struct.Struct(">BIHHHHH")  # type, frame id, w, h, cursor x, curs
 RECT_HEADER = struct.Struct(">HHHHBI")  # x, y, w, h, format, length
 FMT_JPEG = 1
 NO_CURSOR = 0xFFFF
+
+
+def session_locked() -> bool:
+    """Windows: is the secure desktop (lock screen, UAC, Ctrl+Alt+Del) shown?
+
+    A normal application can neither capture nor control it (only a SYSTEM
+    service can). OpenInputDesktop fails, or returns a desktop other than
+    "Default", while it is displayed.
+    """
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        user32.OpenInputDesktop.restype = ctypes.c_void_p
+        user32.CloseDesktop.argtypes = [ctypes.c_void_p]
+        user32.GetUserObjectInformationW.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)
+        ]
+        desk = user32.OpenInputDesktop(0, False, 0x0100)  # DESKTOP_SWITCHDESKTOP
+        if not desk:
+            return True
+        try:
+            name = ctypes.create_unicode_buffer(256)
+            needed = ctypes.c_ulong()
+            if not user32.GetUserObjectInformationW(desk, 2, name, ctypes.sizeof(name), ctypes.byref(needed)):
+                return False
+            return name.value.lower() != "default"
+        finally:
+            user32.CloseDesktop(desk)
+    except Exception:  # noqa: BLE001 - never break capture because of this check
+        return False
 
 
 class CaptureSource(Protocol):

@@ -76,6 +76,7 @@ class SessionSignals(QObject):
     frame = Signal(object, int, int, object, object)  # session, w, h, cursor, [(x, y, QImage)]
     waiting = Signal(object, str)
     connect_result = Signal(object)  # concurrent.futures.Future of core.connect()
+    status = Signal(object, str)  # session, "ok" | "locked" | "unavailable"
 
 
 class QtSessionEvents(SessionEvents):
@@ -102,6 +103,9 @@ class QtSessionEvents(SessionEvents):
 
     def on_info(self, s, info):
         self.sig.info.emit(s, info)
+
+    def on_status(self, s, status):
+        self.sig.status.emit(s, status)
 
     def on_frame(self, s, fid, width, height, cursor, rects):
         # JPEG decoding happens here, in the network thread (QImage is

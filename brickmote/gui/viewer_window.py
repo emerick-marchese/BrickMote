@@ -39,6 +39,7 @@ class RemoteScreen(QWidget):
         self.win = window
         self.image: Optional[QImage] = None
         self.cursor_pos = None
+        self.overlay: Optional[tuple[str, str]] = None  # (title, explanation) shown over the image
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
         self.setAttribute(Qt.WA_OpaquePaintEvent)
@@ -93,6 +94,8 @@ class RemoteScreen(QWidget):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor("#111317"))
         if self.image is None:
+            if self.overlay:
+                self._paint_overlay(p)
             p.end()
             return
         rect = self.target_rect()
@@ -106,7 +109,29 @@ class RemoteScreen(QWidget):
             p.setPen(QPen(QColor("white"), 2))
             p.setBrush(QColor(BRICK))
             p.drawEllipse(QPointF(cx, cy), 6, 6)
+        if self.overlay:
+            self._paint_overlay(p)
         p.end()
+
+    def _paint_overlay(self, p: QPainter):
+        title, text = self.overlay
+        p.fillRect(self.rect(), QColor(10, 12, 15, 200))
+        bw = min(520.0, self.width() - 24.0)
+        box = QRectF((self.width() - bw) / 2, self.height() / 2 - 70, bw, 140)
+        p.fillRect(box, QColor("#181B20"))
+        p.setPen(QColor(BRICK))
+        p.drawRect(box)
+        f = p.font()
+        f.setBold(True)
+        f.setPointSizeF(12)
+        p.setFont(f)
+        p.setPen(QColor("white"))
+        p.drawText(box.adjusted(20, 16, -20, -80), Qt.AlignHCenter | Qt.AlignTop, title)
+        f.setBold(False)
+        f.setPointSizeF(9.5)
+        p.setFont(f)
+        p.setPen(QColor("#C3C8D0"))
+        p.drawText(box.adjusted(20, 52, -20, -12), Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, text)
 
     # ------------------------------------------------------------- input
     def _norm(self, pos: QPointF) -> Optional[tuple[int, int]]:
@@ -172,6 +197,12 @@ class RemoteScreen(QWidget):
 
     def keyPressEvent(self, e):
         if e.isAutoRepeat():
+            # injected keys are not repeated by the remote OS: forward the
+            # local repeats (held Backspace, arrows...) as extra presses
+            held = self._pressed.get(e.key())
+            if held is not None:
+                key, char = held
+                self.win.send(lambda s: s.key(True, key=key, char=char))
             return
         mapped = translate(e.key(), e.text(), e.modifiers())
         if mapped is None:
@@ -241,6 +272,7 @@ class ViewerWindow(QMainWindow):
         sig.waiting.connect(self._on_waiting)
         sig.connect_result.connect(self._on_connect_result)
         sig.frame.connect(self._on_frame)
+        sig.status.connect(self._on_remote_status)
         sig.info.connect(self._on_info)
         sig.permissions.connect(self._on_permissions)
         sig.closed.connect(self._on_closed)
@@ -419,6 +451,23 @@ class ViewerWindow(QMainWindow):
         if idx >= 0:
             self.monitor_box.setCurrentIndex(idx)
         # the performance profile is chosen here, not by the host
+
+    STATUS_TEXT = {
+        "locked": (
+            "L'ordinateur distant est verrouillé",
+            "Windows protège l'écran de verrouillage : BrickMote ne peut ni l'afficher ni le contrôler "
+            "pour l'instant. L'image reviendra dès que la session sera déverrouillée sur place.",
+        ),
+        "unavailable": (
+            "Écran distant indisponible",
+            "La capture d'écran a échoué sur l'ordinateur distant (écran éteint, session fermée "
+            "ou session Wayland sous Linux).",
+        ),
+    }
+
+    def _on_remote_status(self, session, status: str):
+        self.screen.overlay = self.STATUS_TEXT.get(status)
+        self.screen.update()
 
     def _on_frame(self, session, width, height, cursor, images):
         self._frames += 1

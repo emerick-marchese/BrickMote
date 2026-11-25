@@ -53,6 +53,10 @@ class ViewerSession(PeerSession):
                     pass
             self.events.on_info(self, dict(self.info))
             self.events.on_permissions(self, dict(self.permissions))
+        elif t == "status":
+            status = msg.get("s")
+            if status in ("ok", "locked", "unavailable"):
+                self.events.on_status(self, status)
         elif t == "perm":
             self.permissions = sanitize_permissions(msg.get("perms"))
             self.events.on_permissions(self, dict(self.permissions))

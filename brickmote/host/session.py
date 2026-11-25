@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Callable, Optional
 
 from ..crypto.handshake import HandshakeResult, sanitize_permissions
 from ..session import PeerSession, SessionEvents
+from .capture import session_locked
 from .capture import QUALITY_PRESETS, AdaptiveQuality, FrameEncoder, MSSCapture, get_profile, pack_frame, scale_for, scaled
 from .inputs import InputInjector
 
@@ -61,7 +63,10 @@ class HostSession(PeerSession):
         self._ack = asyncio.Event()
         self._in_flight = 0
         self._pending_input = 0
+        self._pending_lock = threading.Lock()
         self.frames_sent = 0
+        self._status = "ok"  # what the viewer was told: ok | locked | unavailable
+        self._failures = 0
 
     # ----------------------------------------------------------- lifecycle
     async def start(self) -> None:
@@ -82,6 +87,15 @@ class HostSession(PeerSession):
             self._capture = self._capture_factory()
         return self._capture.monitors()
 
+    def _close_capture(self) -> None:
+        """Runs in the capture thread."""
+        cap, self._capture = self._capture, None
+        if cap is not None:
+            try:
+                cap.close()
+            except Exception:  # noqa: BLE001
+                pass
+
     def _select_monitor(self, index: int) -> bool:
         mon = next((m for m in self.monitors if m["index"] == index), None)
         if mon is None:
@@ -95,8 +109,7 @@ class HostSession(PeerSession):
     async def on_close(self) -> None:
         self._input_exec.submit(self._injector.release_all)
         self._input_exec.shutdown(wait=False)
-        if self._capture is not None:
-            self._capture_exec.submit(self._capture.close)
+        self._capture_exec.submit(self._close_capture)
         self._capture_exec.submit(self._encoder.close)
         self._capture_exec.shutdown(wait=False)
 
@@ -149,12 +162,22 @@ class HostSession(PeerSession):
             started = loop.time()
             try:
                 payload = await loop.run_in_executor(self._capture_exec, self._grab_encode, frame_id + 1)
+                self._failures = 0
             except RuntimeError:  # executor shut down while closing
                 return
             except Exception as exc:  # noqa: BLE001
                 log.warning("capture failed: %s", exc)
                 payload = None
+                self._failures += 1
+                if self._failures >= 3:
+                    await self._set_status("unavailable")
                 await asyncio.sleep(0.5)
+                continue
+            if payload == b"locked":
+                await self._set_status("locked")
+                await asyncio.sleep(0.5)
+                continue
+            await self._set_status("ok")
             if payload is not None and not self.closed:
                 frame_id += 1
                 self._in_flight += 1
@@ -167,6 +190,14 @@ class HostSession(PeerSession):
             elapsed = loop.time() - started
             await asyncio.sleep(max(0.002, 1.0 / self.fps - elapsed))
 
+    async def _set_status(self, status: str) -> None:
+        """Tell the viewer when the screen cannot be shown (lock screen...)."""
+        if status != self._status:
+            self._status = status
+            if status == "ok":
+                self._force_full = True
+            await self.send_json({"t": "status", "s": status})
+
     def _on_ack(self, fid: object) -> None:
         self._in_flight = max(0, self._in_flight - 1)
         sent = self._sent.pop(fid, None) if isinstance(fid, int) else None
@@ -178,7 +209,15 @@ class HostSession(PeerSession):
     def _grab_encode(self, frame_id: int) -> Optional[bytes]:
         if self._capture is None:
             self._capture = self._capture_factory()
-        width, height, raw = self._capture.grab(self.monitor_index)
+        if session_locked():
+            return b"locked"
+        try:
+            width, height, raw = self._capture.grab(self.monitor_index)
+        except Exception:
+            # a capture handle can stay broken after a desktop switch (lock,
+            # UAC, resolution change): start again with a fresh one
+            self._close_capture()
+            raise
         frame = FrameEncoder.as_array(width, height, raw)
         profile = self.profile
         quality, level_scale = self.adaptive.current()
@@ -214,21 +253,26 @@ class HostSession(PeerSession):
         return pack_frame(frame_id, fw, fh, cursor, encoded)
 
     # ------------------------------------------------------------- control
-    def _inject(self, fn, *args) -> None:
-        if self._pending_input >= MAX_PENDING_INPUT:
-            return  # viewer flooding us: drop events
-        self._pending_input += 1
+    def _inject(self, fn, *args, droppable: bool = True) -> None:
+        # The counter is shared with the input thread: always under the lock,
+        # or it could drift and end up dropping every event.
+        with self._pending_lock:
+            if droppable and self._pending_input >= MAX_PENDING_INPUT:
+                return  # viewer flooding us: drop moves/presses, never releases
+            self._pending_input += 1
 
         def run():
             try:
                 fn(*args)
             finally:
-                self._pending_input -= 1
+                with self._pending_lock:
+                    self._pending_input -= 1
 
         try:
             self._input_exec.submit(run)
-        except RuntimeError:
-            pass
+        except RuntimeError:  # closing
+            with self._pending_lock:
+                self._pending_input -= 1
 
     async def handle_message(self, msg: dict) -> None:
         t = msg.get("t")
@@ -250,14 +294,18 @@ class HostSession(PeerSession):
                     self._inject(self._injector.mouse_move, msg.get("x"), msg.get("y"))
                 elif action in ("down", "up"):
                     self._inject(
-                        self._injector.mouse_button, msg.get("b"), action == "down", msg.get("x"), msg.get("y")
+                        self._injector.mouse_button, msg.get("b"), action == "down", msg.get("x"), msg.get("y"),
+                        droppable=action == "down",
                     )
             elif t == "wheel":
                 self._inject(self._injector.scroll, msg.get("dx"), msg.get("dy"))
             else:
                 action = msg.get("a")
                 if action in ("down", "up"):
-                    self._inject(self._injector.key, action == "down", msg.get("key"), msg.get("char"))
+                    self._inject(
+                        self._injector.key, action == "down", msg.get("key"), msg.get("char"),
+                        droppable=action == "down",
+                    )
         elif t == "monitor":
             index = msg.get("index")
             if isinstance(index, int) and self._select_monitor(index):
