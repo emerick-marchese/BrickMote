@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+relay-data/
+packaging/brickmote.ico
+packaging/brickmote.icns
+packaging/brickmote.png
+*.pem
+*.sqlite3

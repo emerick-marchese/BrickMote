@@ -1,0 +1,24 @@
+# Déploiement du relais :  docker compose -f deploy/docker-compose.yml up -d
+# L'empreinte du certificat s'affiche avec :  docker compose -f deploy/docker-compose.yml logs relay
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    # Remplacez par le nom DNS ou l'IP publique de votre serveur
+    command: ["--ports", "6568,443,80", "--hostname", "relais.example.org"]
+    ports:
+      - "6568:6568"
+      - "443:443"
+      - "80:80"
+    volumes:
+      - relay-data:/data
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+volumes:
+  relay-data:
