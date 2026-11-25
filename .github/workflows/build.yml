@@ -31,13 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            asset: BrickMote-Windows-x64.exe
-          - os: macos-latest
-            asset: BrickMote-macOS-AppleSilicon.zip
-          - os: ubuntu-22.04
-            asset: BrickMote-Linux-x64.tar.gz
+        os: [windows-latest, macos-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -48,18 +42,46 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0
       - run: pip install -r requirements.txt pyinstaller
+      - name: Version
+        id: ver
+        shell: bash
+        run: echo "version=$(python -c 'import brickmote; print(brickmote.__version__)')" >> "$GITHUB_OUTPUT"
       - run: python packaging/make_icon.py
         env:
           QT_QPA_PLATFORM: offscreen
-      - run: pyinstaller --noconfirm packaging/brickmote.spec
-      - name: Préparer le fichier à publier
+      - name: Application (exe portable Windows / BrickMote.app macOS)
+        if: runner.os != 'Linux'
+        run: pyinstaller --noconfirm --workpath build/portable packaging/brickmote.spec
+      - name: Version en dossier (installateur Windows / paquet Linux)
+        if: runner.os != 'macOS'
+        env:
+          BRICKMOTE_ONEDIR: "1"
+        run: pyinstaller --noconfirm --workpath build/onedir packaging/brickmote.spec
+      - name: Installateur Windows (Inno Setup)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DAppVersion=${{ steps.ver.outputs.version }}" "/DSourceDir=$PWD\dist\BrickMote" "/DOutputDir=$PWD\out" packaging\windows\brickmote.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Préparer les fichiers à publier
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p out
+          V="${{ steps.ver.outputs.version }}"
           case "$RUNNER_OS" in
-            Windows) cp dist/BrickMote.exe "out/${{ matrix.asset }}" ;;
-            macOS)   ditto -c -k --sequesterRsrc --keepParent dist/BrickMote.app "out/${{ matrix.asset }}" ;;
-            Linux)   tar -C dist -czf "out/${{ matrix.asset }}" BrickMote ;;
+            Windows)
+              cp dist/BrickMote.exe "out/BrickMote-${V}-Windows-x64-portable.exe" ;;
+            macOS)
+              mkdir dmg
+              cp -R dist/BrickMote.app dmg/
+              ln -s /Applications dmg/Applications
+              hdiutil create -volname BrickMote -srcfolder dmg -ov -format UDZO "out/BrickMote-${V}-macOS-AppleSilicon.dmg" ;;
+            Linux)
+              tar -C dist -czf "out/BrickMote-${V}-Linux-x64.tar.gz" BrickMote
+              packaging/linux/build-deb.sh "$V" "out/BrickMote-${V}-Linux-x64.deb" ;;
           esac
           ls -l out
       - uses: actions/upload-artifact@v4

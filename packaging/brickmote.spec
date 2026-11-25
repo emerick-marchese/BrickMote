@@ -3,6 +3,9 @@
 #   python packaging/make_icon.py
 #   pyinstaller --noconfirm packaging/brickmote.spec
 # Output: dist/BrickMote.exe (Windows), dist/BrickMote.app (macOS), dist/BrickMote (Linux)
+# With BRICKMOTE_ONEDIR=1: a folder dist/BrickMote/ (used by the Windows installer
+# and the Linux package: faster start-up than a single self-extracting file).
+import os
 import sys
 from pathlib import Path
 
@@ -53,6 +56,9 @@ if sys.platform == "darwin":
             "NSAppleEventsUsageDescription": "BrickMote contrôle la souris et le clavier lorsque vous l'autorisez.",
         },
     )
+elif os.environ.get("BRICKMOTE_ONEDIR") == "1":
+    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="BrickMote", console=False, icon=icon, upx=False)
+    coll = COLLECT(exe, a.binaries, a.datas, name="BrickMote", upx=False)
 else:
     exe = EXE(
         pyz,

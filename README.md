@@ -48,9 +48,11 @@ La dernière version se trouve sur la page **[Releases](https://github.com/emeri
 
 | Système | Fichier |
 |---|---|
-| Windows 10 / 11 (64 bits) | `BrickMote-Windows-x64.exe` (portable, aucune installation) |
-| macOS (puces Apple) | `BrickMote-macOS-AppleSilicon.zip` |
-| Linux x64 | `BrickMote-Linux-x64.tar.gz` |
+| Windows 10 / 11 (64 bits) | `BrickMote-Setup-<version>-Windows-x64.exe` (installateur) ou `…-portable.exe` |
+| macOS (puces Apple) | `BrickMote-<version>-macOS-AppleSilicon.dmg` |
+| Linux x64 | `BrickMote-<version>-Linux-x64.deb` (Ubuntu / Debian) ou `.tar.gz` |
+
+L'installateur Windows crée les raccourcis et propose le lancement au démarrage (dans la zone de notification) ainsi que les règles de pare-feu (réseaux privés uniquement). Il installe aussi un désinstalleur.
 
 Chaque release liste les empreintes SHA-256 des fichiers, pour vérifier qu'un téléchargement n'a pas été modifié.
 
@@ -62,7 +64,7 @@ Chaque release liste les empreintes SHA-256 des fichiers, pour vérifier qu'un t
 2. Ajoutez les notes de version dans `release-notes/vX.Y.Z.md`.
 3. Dans l'onglet **Actions** de GitHub, ouvrez le workflow « Tests et exécutables », cliquez sur **Run workflow** et saisissez `vX.Y.Z`. Pousser un tag `vX.Y.Z` fonctionne aussi.
 
-Le workflow compile les trois exécutables, crée le tag et publie la release avec les fichiers et leurs empreintes. À chaque push, les exécutables sont aussi disponibles dans l'onglet **Actions**, section *Artifacts*.
+Le workflow compile l'installateur Windows (Inno Setup) et l'exe portable, l'image `.dmg` pour macOS, le paquet `.deb` et l'archive Linux. Il crée ensuite le tag et publie la release avec tous les fichiers et leurs empreintes SHA-256. À chaque push, les exécutables sont aussi disponibles dans l'onglet **Actions**, section *Artifacts*.
 
 ### Depuis les sources (Windows, macOS, Linux)
 

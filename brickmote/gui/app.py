@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import sys
 from pathlib import Path
@@ -22,6 +23,9 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="brickmote", description="BrickMote - bureau à distance sécurisé")
     parser.add_argument("--home", help="dossier de configuration (par défaut : dossier utilisateur)")
     parser.add_argument("--debug", action="store_true", help="journalisation détaillée")
+    parser.add_argument(
+        "--minimized", action="store_true", help="démarrer dans la zone de notification (démarrage de Windows)"
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -31,6 +35,7 @@ def main(argv=None) -> int:
     _windows_dpi_awareness()
 
     from PySide6.QtCore import QLockFile
+    from PySide6.QtNetwork import QLocalServer, QLocalSocket
     from PySide6.QtWidgets import QApplication, QMessageBox
 
     from ..config import Paths
@@ -51,9 +56,19 @@ def main(argv=None) -> int:
     paths = Paths(Path(args.home) if args.home else None)
     paths.base.mkdir(parents=True, exist_ok=True)
     apply_theme(app, Settings.load(paths.settings).theme)
+    # One instance per configuration folder. Launching BrickMote again (Start
+    # menu, desktop shortcut) brings the running window to the front instead.
+    instance = "BrickMote-" + hashlib.sha256(str(paths.base.resolve()).encode()).hexdigest()[:16]
     lock = QLockFile(str(paths.base / "brickmote.lock"))
     if not lock.tryLock(100):
-        QMessageBox.information(None, "BrickMote", "BrickMote est déjà en cours d'exécution.")
+        sock = QLocalSocket()
+        sock.connectToServer(instance)
+        if sock.waitForConnected(1500):
+            sock.write(b"show")
+            sock.waitForBytesWritten(1000)
+            sock.disconnectFromServer()
+        else:
+            QMessageBox.information(None, "BrickMote", "BrickMote est déjà en cours d'exécution.")
         return 0
 
     ui = QtCoreUI()
@@ -63,8 +78,27 @@ def main(argv=None) -> int:
     core_thread.submit(core.start())
 
     window = MainWindow(core, core_thread, ui)
-    window.show()
+    if args.minimized and window.tray is not None:
+        window.tray.showMessage("BrickMote", f"BrickMote est actif : ID {core.identity.display_id}")
+    elif args.minimized:
+        window.showMinimized()
+    else:
+        window.show()
+
+    server = QLocalServer()
+    server.setSocketOptions(QLocalServer.UserAccessOption)  # only this user's processes
+    QLocalServer.removeServer(instance)
+    if server.listen(instance):
+        def _activate():
+            conn = server.nextPendingConnection()
+            if conn is not None:
+                conn.disconnectFromServer()
+            window._show()
+
+        server.newConnection.connect(_activate)
+
     code = app.exec()
+    server.close()
 
     try:
         core_thread.submit(core.stop()).result(timeout=5)
