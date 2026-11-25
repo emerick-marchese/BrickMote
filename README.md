@@ -42,11 +42,27 @@ La sécurité est la priorité du projet. Le détail (modèle de menace, protoco
 - **Relais en TLS 1.3** avec épinglage du certificat. Chaque poste s'enregistre en signant un défi, et un tiers qui intercepte un jeton de session ne peut pas s'y brancher.
 - **Robustesse** : tailles de trames bornées, toutes les entrées réseau validées, noms de fichiers reçus assainis (pas de `../`, pas d'écrasement), touches injectables limitées à une liste blanche, et touches relâchées automatiquement en fin de session.
 
+## Télécharger
+
+La dernière version se trouve sur la page **[Releases](https://github.com/emerick-marchese/BrickMote/releases/latest)** :
+
+| Système | Fichier |
+|---|---|
+| Windows 10 / 11 (64 bits) | `BrickMote-Windows-x64.exe` (portable, aucune installation) |
+| macOS (puces Apple) | `BrickMote-macOS-AppleSilicon.zip` |
+| Linux x64 | `BrickMote-Linux-x64.tar.gz` |
+
+Chaque release liste les empreintes SHA-256 des fichiers, pour vérifier qu'un téléchargement n'a pas été modifié.
+
 ## Installation
 
-### Exécutables prêts à l'emploi
+### Publier une nouvelle version
 
-Le workflow GitHub Actions (`.github/workflows/build.yml`) lance les tests puis produit `BrickMote.exe` (Windows), `BrickMote.app` (macOS) et `BrickMote` (Linux) à chaque push. Les exécutables se téléchargent dans l'onglet **Actions** du dépôt, section *Artifacts*.
+1. Mettez à jour `__version__` dans `brickmote/__init__.py` (et `pyproject.toml`).
+2. Ajoutez les notes de version dans `release-notes/vX.Y.Z.md`.
+3. Dans l'onglet **Actions** de GitHub, ouvrez le workflow « Tests et exécutables », cliquez sur **Run workflow** et saisissez `vX.Y.Z`. Pousser un tag `vX.Y.Z` fonctionne aussi.
+
+Le workflow compile les trois exécutables, crée le tag et publie la release avec les fichiers et leurs empreintes. À chaque push, les exécutables sont aussi disponibles dans l'onglet **Actions**, section *Artifacts*.
 
 ### Depuis les sources (Windows, macOS, Linux)
 
