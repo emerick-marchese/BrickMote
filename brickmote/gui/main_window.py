@@ -51,6 +51,7 @@ from .dialogs import (
     IncomingDialog,
     PasswordPromptDialog,
     SettingsDialog,
+    UpdateDialog,
     WakeDialog,
 )
 from .icons import icon, pixmap
@@ -145,7 +146,8 @@ class MainWindow(QMainWindow):
         self._clock.start()
         self._update_timer = QTimer(self, interval=12 * 3600 * 1000, timeout=self.check_updates)
         self._update_timer.start()
-        QTimer.singleShot(8000, self.check_updates)
+        self._startup_check = True
+        QTimer.singleShot(3000, self.check_updates)
 
     # ================================================================ layout
     def _build(self):
@@ -714,6 +716,7 @@ class MainWindow(QMainWindow):
     def _on_update_found(self, release):
         self._release = release
         kind = updater.install_kind()
+        startup, self._startup_check = self._startup_check, False
         if kind == "windows-installed":
             self.update_text.setText(
                 f"<b>BrickMote {release.version} est disponible.</b> Elle s'installera automatiquement "
@@ -724,8 +727,24 @@ class MainWindow(QMainWindow):
             self.update_text.setText(f"<b>BrickMote {release.version} est disponible.</b>")
             self.btn_update.setText("Télécharger")
         self.update_banner.show()
+        if startup and release.version != self.core.settings.skipped_update:
+            if self.isVisible() and not self.isMinimized():
+                self._show_update_dialog(release, kind == "windows-installed")
+                return
         if self.tray:
             self.tray.showMessage("BrickMote", f"Nouvelle version disponible : {release.version}")
+
+    def _show_update_dialog(self, release, installable: bool):
+        dlg = UpdateDialog(
+            release.version, __version__, updater.release_highlights(release.notes), installable, self
+        )
+        dlg.setWindowIcon(app_icon())
+        dlg.exec()
+        if dlg.skip.isChecked():
+            self.core.settings.skipped_update = release.version
+            self.core_thread.submit(_call(self.core.save_settings))
+        if dlg.action == "install":
+            self._update_clicked()
 
     def _update_clicked(self):
         release = self._release

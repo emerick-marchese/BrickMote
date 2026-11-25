@@ -423,6 +423,66 @@ class AuditDialog(QDialog):
 
 
 # --------------------------------------------------------------------------
+# Update available (shown at start-up)
+# --------------------------------------------------------------------------
+
+
+class UpdateDialog(QDialog):
+    def __init__(self, version: str, current: str, highlights: list, installable: bool, parent=None):
+        super().__init__(parent)
+        self.action = "later"
+        self.setWindowTitle("BrickMote - Mise à jour disponible")
+        self.setMinimumWidth(500)
+        lay = QVBoxLayout(self)
+        top = QHBoxLayout()
+        mark = QLabel()
+        mark.setPixmap(logo(52))
+        top.addWidget(mark)
+        head = QVBoxLayout()
+        title = QLabel(f"BrickMote {version} est disponible", objectName="CardTitle")
+        title.setTextFormat(Qt.PlainText)
+        head.addWidget(title)
+        sub = QLabel(f"Vous utilisez la version {current}.", objectName="Muted")
+        sub.setTextFormat(Qt.PlainText)
+        head.addWidget(sub)
+        top.addLayout(head, 1)
+        lay.addLayout(top)
+        if highlights:
+            box = QGroupBox("Nouveautés")
+            bl = QVBoxLayout(box)
+            for item in highlights:
+                lab = QLabel("•  " + item)
+                lab.setTextFormat(Qt.PlainText)  # release notes are not signed: never render them as HTML
+                lab.setWordWrap(True)
+                bl.addWidget(lab)
+            lay.addWidget(box)
+        if installable:
+            hint = (
+                "La mise à jour est vérifiée (signature et empreinte) avant d'être installée. "
+                "Sinon, elle s'installera automatiquement au prochain démarrage du PC."
+            )
+        else:
+            hint = "Téléchargez la nouvelle version depuis la page de la release."
+        lay.addWidget(_label(hint, "Small", True))
+        self.skip = QCheckBox("Ne plus afficher pour cette version")
+        lay.addWidget(self.skip)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        later = _button("Au prochain démarrage" if installable else "Plus tard")
+        later.clicked.connect(self.reject)
+        row.addWidget(later)
+        go = _button("Installer maintenant" if installable else "Télécharger", "Primary")
+        go.setDefault(True)
+        go.clicked.connect(self._go)
+        row.addWidget(go)
+        lay.addLayout(row)
+
+    def _go(self):
+        self.action = "install"
+        self.accept()
+
+
+# --------------------------------------------------------------------------
 # Password prompt (viewer side)
 # --------------------------------------------------------------------------
 

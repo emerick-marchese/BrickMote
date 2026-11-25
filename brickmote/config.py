@@ -69,6 +69,7 @@ class Settings:
     fps: int = 20
     theme: str = "dark"  # dark | light
     check_updates: bool = True  # look for a new version at start-up
+    skipped_update: str = ""  # "don't show again" for this version
     device_view: str = "large"  # large | small | list
     save_thumbnails: bool = True  # small preview of the remote screen in "Récents"
     # Wake-on-LAN: send this PC's MAC address to authorised viewers so they can wake it

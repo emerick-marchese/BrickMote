@@ -110,6 +110,7 @@ class Release:
     tag: str
     page: str
     assets: dict = field(default_factory=dict)  # name -> (url, size)
+    notes: str = ""  # release notes (NOT signed: display as plain text only)
 
 
 def fetch_latest(get: Getter = http_get) -> Optional[Release]:
@@ -124,7 +125,32 @@ def fetch_latest(get: Getter = http_get) -> Optional[Release]:
         if isinstance(name, str) and isinstance(url, str) and url.startswith("https://") and isinstance(size, int):
             assets[name] = (url, size)
     page = data.get("html_url") if isinstance(data.get("html_url"), str) else RELEASES_PAGE
-    return Release(".".join(map(str, version)), tag, page, assets)
+    notes = data.get("body") if isinstance(data.get("body"), str) else ""
+    return Release(".".join(map(str, version)), tag, page, assets, notes[:20000])
+
+
+def release_highlights(notes: str, limit: int = 6, width: int = 220) -> list[str]:
+    """Bullet points of the release notes, as short plain text (no markup,
+    no links): the notes are not covered by the signature."""
+    out = []
+    for line in notes.splitlines():
+        line = line.strip()
+        if line.startswith("## ") and out:
+            break  # only the first section ("Nouveautés")
+        if not line.startswith(("- ", "* ")):
+            continue
+        text = line[2:]
+        text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)  # [label](url) -> label
+        text = re.sub(r"[*_`#>]", "", text)
+        text = "".join(ch for ch in text if ch.isprintable()).strip()
+        first, sep, _rest = text.partition(". ")
+        if sep:
+            text = first + "."  # first sentence only: readable at a glance
+        if text:
+            out.append(text if len(text) <= width else text[: width - 1].rstrip() + "…")
+        if len(out) >= limit:
+            break
+    return out
 
 
 def install_kind() -> str:

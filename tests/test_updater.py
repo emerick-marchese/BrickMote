@@ -173,3 +173,20 @@ def test_sign_release_script(tmp_path, monkeypatch):
     assert updater.verify_sums(sums.read_bytes(), (tmp_path / "SHA256SUMS.txt.sig").read_bytes()) == {
         "a.exe": hashlib.sha256(b"x").hexdigest()
     }
+
+
+def test_release_highlights_are_plain_and_short():
+    notes = (ROOT / "release-notes" / "v1.0.3.md").read_text()
+    items = updater.release_highlights(notes)
+    assert 1 <= len(items) <= 6
+    assert all("**" not in i and "`" not in i for i in items)
+    hostile = "- Cliquez [ici](https://evil.example) <img src=x onerror=alert(1)> **vite**\n" + "- x" * 0
+    item = updater.release_highlights(hostile)[0]
+    assert "evil.example" not in item and item.startswith("Cliquez ici")
+    assert len(updater.release_highlights("- " + "a" * 1000)[0]) <= 220
+
+
+def test_fetch_latest_keeps_notes():
+    payload = {"tag_name": "v9.0.0", "body": "- Nouveauté", "assets": []}
+    rel = updater.fetch_latest(lambda url, limit: json.dumps(payload).encode())
+    assert rel.notes == "- Nouveauté"
