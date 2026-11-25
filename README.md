@@ -15,6 +15,7 @@ Logiciel de **bureau à distance** dans l'esprit d'AnyDesk : un ID à 9 chiffres
 | Accès | **interactif** (une personne accepte, avec un code de sécurité) ou **sans surveillance** (mot de passe + double authentification TOTP en option) |
 | Contrôle d'accès | liste blanche d'ID, liste de postes bloqués, droits modifiables en direct pendant la session, journal de sécurité |
 | Postes | onglets Récents, Favoris et Réseau local, en grandes vignettes (avec aperçu du dernier écran vu), petites vignettes ou liste ; étoile pour épingler, renommage, oubli d'un poste |
+| Réveil | **Wake-on-LAN** : réveil d'un PC éteint ou en veille, sur le port UDP de votre choix (9 par défaut), en réseau local ou depuis Internet ; l'adresse MAC est apprise automatiquement pendant une session |
 | Transparence | un panneau « Session à distance en cours » reste affiché sur l'hôte tant que quelqu'un est connecté : **pas de mode caché** |
 
 ## Ports (identiques à AnyDesk)
@@ -103,6 +104,14 @@ Sur le poste à contrôler, ouvrez **Paramètres > Sécurité** :
 3. Dans **Contrôle d'accès**, activez la **liste blanche** avec les ID de vos propres postes : ce sont alors les seuls autorisés à se connecter.
 
 Côté client, cochez **Accès sans surveillance** sous le champ d'ID et saisissez le mot de passe.
+
+### Réveiller un PC (Wake-on-LAN)
+
+- **En un clic** : après une première session, BrickMote connaît l'adresse MAC du poste. Un bouton ⏻ apparaît sur sa vignette, et une proposition « Réveiller ce PC » s'affiche si une connexion échoue.
+- **Manuellement**, comme une appli de téléphone : bouton **Réveiller un PC** sous la barre de connexion, puis adresse MAC, adresse de destination et **port UDP au choix** (9 par défaut, souvent 7 ou 9). Un mot de passe SecureOn est facultatif.
+- **Depuis Internet** : indiquez l'adresse publique ou le nom de votre box, et redirigez ce port UDP vers le réseau local dans la box.
+
+Côté PC à réveiller : activez « Wake on LAN » dans le BIOS/UEFI et, sous Windows, dans *Gestionnaire de périphériques > carte réseau > Gestion de l'alimentation*. Si le PC est éteint (pas en veille), désactivez aussi le démarrage rapide de Windows. Le réveil fonctionne surtout en Ethernet. L'adresse MAC de ce PC est affichée dans **Paramètres > Réseau**.
 
 ## Serveur relais (connexion par ID via Internet)
 

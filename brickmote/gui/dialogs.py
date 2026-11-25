@@ -419,6 +419,98 @@ class AuditDialog(QDialog):
 
 
 # --------------------------------------------------------------------------
+# Wake-on-LAN
+# --------------------------------------------------------------------------
+
+
+class WakeDialog(QDialog):
+    """Like a phone Wake-on-LAN app: MAC, destination address, UDP port."""
+
+    def __init__(self, parent=None, wol: Optional[dict] = None, device_label: str = "", can_save: bool = False):
+        super().__init__(parent)
+        self.setWindowTitle("Réveiller un PC (Wake-on-LAN)")
+        self.setMinimumWidth(480)
+        self.action: Optional[str] = None
+        self.values: dict = {}
+        wol = wol or {}
+        lay = QVBoxLayout(self)
+        title = f"Réveiller {device_label}" if device_label else "Réveiller un PC à distance"
+        lay.addWidget(_label(f"<b>{_esc(title)}</b>", "CardTitle"))
+        lay.addWidget(
+            _label(
+                "BrickMote envoie un « paquet magique » sur le port UDP choisi. Le PC doit être relié "
+                "au secteur, avec le Wake-on-LAN activé dans son BIOS/UEFI et sa carte réseau.",
+                "Muted",
+                True,
+            )
+        )
+        form = QFormLayout()
+        self.mac = QLineEdit(wol.get("mac", ""), placeholderText="ex. 1C:69:7A:0B:12:EF")
+        self.address = QLineEdit(
+            wol.get("address", "") or "255.255.255.255", placeholderText="255.255.255.255, 192.168.1.255 ou mabox.fr"
+        )
+        self.port = QSpinBox(minimum=1, maximum=65535, value=int(wol.get("port", 9) or 9))
+        self.secureon = QLineEdit(wol.get("secureon", ""), placeholderText="facultatif (SecureOn)")
+        form.addRow("Adresse MAC", self.mac)
+        form.addRow("Adresse de destination", self.address)
+        form.addRow("Port UDP", self.port)
+        form.addRow("Mot de passe", self.secureon)
+        lay.addLayout(form)
+        lay.addWidget(
+            _label(
+                "Réseau local : laissez 255.255.255.255 (ou l'adresse de diffusion, ex. 192.168.1.255). "
+                "Depuis Internet : saisissez l'adresse publique ou le nom de votre box et redirigez-y "
+                "ce port UDP vers le réseau local, comme pour une appli de réveil sur téléphone.",
+                "Small",
+                True,
+            )
+        )
+        self.remember = QCheckBox("Mémoriser ces réglages pour ce poste")
+        self.remember.setChecked(True)
+        self.remember.setVisible(can_save)
+        lay.addWidget(self.remember)
+        self.error = _label("", "Small", True)
+        self.error.setStyleSheet(f"color: {C['DANGER']};")
+        lay.addWidget(self.error)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        cancel = _button("Annuler")
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        if can_save:
+            save = _button("Enregistrer")
+            save.clicked.connect(lambda: self._finish("save"))
+            row.addWidget(save)
+        wake = _button("Réveiller", "Primary")
+        wake.setDefault(True)
+        wake.clicked.connect(lambda: self._finish("wake"))
+        row.addWidget(wake)
+        lay.addLayout(row)
+
+    def _finish(self, action: str):
+        from ..net.wol import WolError, format_mac, parse_secureon
+
+        try:
+            mac = format_mac(self.mac.text())
+            parse_secureon(self.secureon.text())
+        except WolError as exc:
+            self.error.setText(str(exc).capitalize())
+            return
+        address = self.address.text().strip() or "255.255.255.255"
+        if len(address) > 253 or any(c.isspace() for c in address):
+            self.error.setText("Adresse de destination invalide.")
+            return
+        self.values = {
+            "mac": mac,
+            "address": address,
+            "port": self.port.value(),
+            "secureon": self.secureon.text().strip(),
+        }
+        self.action = action
+        self.accept()
+
+
+# --------------------------------------------------------------------------
 # Settings
 # --------------------------------------------------------------------------
 
@@ -657,6 +749,34 @@ class SettingsDialog(QDialog):
         dl.addRow("Port TCP", self.direct_port)
         dl.addRow(self.discovery)
         lay.addWidget(direct)
+
+        wake = QGroupBox("Réveil à distance (Wake-on-LAN)")
+        wl = QVBoxLayout(wake)
+        self.share_wol = QCheckBox("Transmettre l'adresse MAC de ce PC aux postes autorisés (réveil en un clic)")
+        self.share_wol.setChecked(self.s.share_wol_info)
+        wl.addWidget(self.share_wol)
+        from ..net.wol import local_wol_info
+
+        info = local_wol_info()
+        if info:
+            text = f"Adresse MAC de ce PC : <b>{info['mac']}</b> · diffusion {info['broadcast']}"
+            if info.get("interface"):
+                text += f" · interface {_esc(info['interface'])}"
+        else:
+            text = "Adresse MAC de ce PC introuvable."
+        wl.addWidget(_label(text, "Small", True))
+        wl.addWidget(
+            _label(
+                "Pour pouvoir réveiller ce PC : activez « Wake on LAN » dans le BIOS/UEFI et, sous Windows, "
+                "dans Gestionnaire de périphériques > carte réseau > Gestion de l'alimentation "
+                "(« Autoriser ce périphérique à sortir l'ordinateur du mode veille »). "
+                "Si le PC est éteint, désactivez aussi le démarrage rapide de Windows. "
+                "Le réveil fonctionne surtout en Ethernet (rarement en Wi-Fi).",
+                "Small",
+                True,
+            )
+        )
+        lay.addWidget(wake)
         lay.addStretch(1)
         return w
 
@@ -719,6 +839,7 @@ class SettingsDialog(QDialog):
         s.direct_enabled = self.direct.isChecked()
         s.direct_port = self.direct_port.value()
         s.discovery_enabled = self.discovery.isChecked()
+        s.share_wol_info = self.share_wol.isChecked()
         if s.acl_enabled and not s.acl:
             if QMessageBox.question(
                 self, "BrickMote", "La liste blanche est vide : plus aucun poste ne pourra se connecter. Continuer ?"

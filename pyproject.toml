@@ -17,6 +17,7 @@ dependencies = [
     "Pillow>=10.0",
     "numpy>=1.26",
     "qrcode>=7.4",
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]

@@ -32,8 +32,10 @@ class HostSession(PeerSession):
         fps: int = 20,
         capture_factory: Callable = MSSCapture,
         injector_factory: Callable = InputInjector,
+        wol_info: Optional[dict] = None,
     ):
         super().__init__(result, events, downloads)
+        self.wol_info = wol_info
         self.quality = quality if quality in QUALITY_PRESETS else "balanced"
         self.fps = max(1, min(60, fps))
         self._capture_factory = capture_factory
@@ -90,7 +92,7 @@ class HostSession(PeerSession):
         self._capture_exec.shutdown(wait=False)
 
     def _info(self) -> dict:
-        return {
+        info = {
             "t": "info",
             "monitors": [{"index": m["index"], "width": m["width"], "height": m["height"]} for m in self.monitors],
             "monitor": self.monitor_index,
@@ -98,6 +100,9 @@ class HostSession(PeerSession):
             "quality": self.quality,
             "fps": self.fps,
         }
+        if self.wol_info:
+            info["wol"] = {"mac": self.wol_info.get("mac"), "broadcast": self.wol_info.get("broadcast")}
+        return info
 
     async def set_permissions(self, perms: dict) -> None:
         """Called from the host UI to change rights during a session."""

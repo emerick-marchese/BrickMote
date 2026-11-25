@@ -6,3 +6,4 @@ pynput>=1.7.6
 Pillow>=10.0
 numpy>=1.26
 qrcode>=7.4
+psutil>=5.9

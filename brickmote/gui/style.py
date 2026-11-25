@@ -171,6 +171,14 @@ QToolButton#RowStar:hover {{ background: {NEUTRAL_SOFT}; }}
 #DeviceRow {{ background: {CARD}; border: 1px solid {LINE}; border-radius: 2px; }}
 #DeviceRow:hover {{ border: 1px solid {BRICK}; }}
 
+/* toast notification */
+#Toast {{ background: {CARD}; color: {INK}; border: 1px solid {LINE}; border-left: 4px solid {OK};
+         padding: 12px 16px; font-weight: 600; }}
+#ToastError {{ background: {CARD}; color: {INK}; border: 1px solid {LINE}; border-left: 4px solid {DANGER};
+              padding: 12px 16px; font-weight: 600; }}
+QPushButton#WakeLink {{ background: transparent; border: none; color: {MUTED}; padding: 4px 6px; font-weight: 600; }}
+QPushButton#WakeLink:hover {{ color: {BRICK}; }}
+
 /* generic controls */
 QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QTextEdit {{
     background: {INPUT_BG}; color: {INK}; border: 1px solid {INPUT_BORDER}; border-radius: 2px; padding: 6px 8px;

@@ -68,6 +68,8 @@ class Settings:
     theme: str = "dark"  # dark | light
     device_view: str = "large"  # large | small | list
     save_thumbnails: bool = True  # small preview of the remote screen in "Récents"
+    # Wake-on-LAN: send this PC's MAC address to authorised viewers so they can wake it
+    share_wol_info: bool = True
 
     def password_verifier(self) -> Optional[PasswordVerifier]:
         if not self.password:
@@ -156,6 +158,9 @@ class KnownHosts:
 
     def set_favorite(self, device_id: str, favorite: bool) -> None:
         self._update(device_id, favorite=bool(favorite))
+
+    def set_wol(self, device_id: str, wol: Optional[dict]) -> None:
+        self._update(device_id, wol=wol)
 
     def set_alias(self, device_id: str, alias: str) -> None:
         alias = "".join(ch for ch in alias if ch.isprintable()).strip()[:64]

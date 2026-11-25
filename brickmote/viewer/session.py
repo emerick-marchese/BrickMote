@@ -7,6 +7,7 @@ from pathlib import Path
 from ..crypto.handshake import HandshakeResult, sanitize_permissions
 from ..host.capture import unpack_frame
 from ..host.inputs import BUTTONS, COORD_MAX, SPECIAL_KEYS
+from ..net.wol import sanitize_wol
 from ..session import PeerSession, SessionEvents
 
 
@@ -40,6 +41,7 @@ class ViewerSession(PeerSession):
                 "monitor": msg.get("monitor") if isinstance(msg.get("monitor"), int) else 1,
                 "quality": msg.get("quality") if isinstance(msg.get("quality"), str) else "balanced",
                 "fps": msg.get("fps") if isinstance(msg.get("fps"), int) else 20,
+                "wol": sanitize_wol(msg.get("wol")),
             }
             self.permissions = sanitize_permissions(msg.get("perms"))
             self.events.on_info(self, dict(self.info))

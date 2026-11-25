@@ -185,6 +185,8 @@ class ViewerWindow(QMainWindow):
     def __init__(self, core_thread: CoreThread, target: str, parent=None, on_thumbnail=None):
         super().__init__(parent)
         self.on_thumbnail = on_thumbnail  # callable(device_id, QImage): keeps a preview for "Récents"
+        self.on_wol_learned = None  # callable(device_id, {"mac", "broadcast"})
+        self.wake_action = None  # callable(target) -> callable | None (offer Wake-on-LAN on failure)
         self._snapshot_scheduled = False
         self.core_thread = core_thread
         self.target = target
@@ -353,7 +355,17 @@ class ViewerWindow(QMainWindow):
         if exc is not None:
             if not self._closing:
                 self._closing = True
-                QMessageBox.warning(self, "BrickMote", str(exc))
+                wake = self.wake_action(self.target) if self.wake_action else None
+                if wake is None:
+                    QMessageBox.warning(self, "BrickMote", str(exc))
+                else:
+                    box = QMessageBox(QMessageBox.Warning, "BrickMote", str(exc), parent=self)
+                    box.setInformativeText("Le poste est peut-être éteint ou en veille.")
+                    wake_btn = box.addButton("Réveiller ce PC", QMessageBox.AcceptRole)
+                    box.addButton("Fermer", QMessageBox.RejectRole)
+                    box.exec()
+                    if box.clickedButton() is wake_btn:
+                        wake()
                 self.close()
             return
         session = fut.result()
@@ -370,6 +382,11 @@ class ViewerWindow(QMainWindow):
         self._on_permissions(session, session.permissions)
 
     def _on_info(self, session, info: dict):
+        if info.get("wol") and self.on_wol_learned is not None:
+            try:
+                self.on_wol_learned(session.peer.device_id, info["wol"])
+            except RuntimeError:
+                pass
         self.monitor_box.clear()
         for m in info.get("monitors", []):
             self.monitor_box.addItem(f"{m['index']} ({m['width']}×{m['height']})", m["index"])

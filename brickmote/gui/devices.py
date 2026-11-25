@@ -93,6 +93,7 @@ class _DeviceItem(QFrame):
     """Common behaviour of tiles and rows."""
 
     activated = Signal(str)
+    wake_requested = Signal(str)
     menu_requested = Signal(str, object)  # device id, global position
     favorite_toggled = Signal(str, bool)
 
@@ -114,6 +115,17 @@ class _DeviceItem(QFrame):
         star.setCursor(Qt.PointingHandCursor)
         star.clicked.connect(lambda: self.favorite_toggled.emit(self.device["id"], not fav))
         return star
+
+    def _wake_button(self) -> Optional[QToolButton]:
+        if not self.device.get("wol"):
+            return None
+        btn = QToolButton(objectName="TileMenu")
+        btn.setIcon(icon("power", C["MUTED"], 17))
+        btn.setIconSize(QSize(17, 17))
+        btn.setToolTip("Réveiller ce PC (Wake-on-LAN)")
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.clicked.connect(lambda: self.wake_requested.emit(self.device["id"]))
+        return btn
 
     def _menu_button(self) -> QToolButton:
         btn = QToolButton(objectName="TileMenu")
@@ -170,6 +182,9 @@ class DeviceTile(_DeviceItem):
         else:
             text.addWidget(ElidedLabel(format_id(device["id"]), "TileId"))
         fl.addLayout(text, 1)
+        wake = self._wake_button()
+        if wake is not None:
+            fl.addWidget(wake)
         fl.addWidget(self._menu_button())
         lay.addWidget(footer)
 
@@ -203,6 +218,9 @@ class DeviceRow(_DeviceItem):
                 icon("star_fill" if device["favorite"] else "star", STAR_COLOR if device["favorite"] else C["MUTED"], 16)
             )
             lay.addWidget(star)
+        wake = self._wake_button()
+        if wake is not None:
+            lay.addWidget(wake)
         lay.addWidget(self._menu_button())
 
 
@@ -212,6 +230,8 @@ class DeviceBrowser(QWidget):
     rename_requested = Signal(str)
     forget_requested = Signal(str)
     view_changed = Signal(str)
+    wake_requested = Signal(str)
+    wake_settings_requested = Signal(str)
 
     TABS = (("recent", "Récents"), ("favorites", "Favoris"), ("lan", "Réseau local"))
     EMPTY = {
@@ -322,6 +342,7 @@ class DeviceBrowser(QWidget):
                 "online": online,
                 "known": dev in known,
                 "favorite": bool(entry.get("favorite")),
+                "wol": bool(isinstance(entry.get("wol"), dict) and entry["wol"].get("mac")),
             }
 
         by_recent = sorted(known, key=lambda d: -int(known[d].get("last_seen", 0) or 0))
@@ -354,6 +375,7 @@ class DeviceBrowser(QWidget):
                 self.flow.addWidget(item)
             item.activated.connect(self.connect_requested)
             item.favorite_toggled.connect(self.favorite_toggled)
+            item.wake_requested.connect(self.wake_requested)
             item.menu_requested.connect(self._menu)
         self.flow_host.setVisible(bool(devices) and self.view != "list")
         self.list_host.setVisible(bool(devices) and self.view == "list")
@@ -376,6 +398,15 @@ class DeviceBrowser(QWidget):
                 lambda: self.favorite_toggled.emit(dev, not fav),
             )
             menu.addAction(icon("edit", C["INK"], 16), "Renommer…", lambda: self.rename_requested.emit(dev))
+            menu.addSeparator()
+            has_wol = isinstance(entry.get("wol"), dict) and entry["wol"].get("mac")
+            if has_wol:
+                menu.addAction(icon("power", C["INK"], 16), "Réveiller (Wake-on-LAN)", lambda: self.wake_requested.emit(dev))
+            menu.addAction(
+                icon("settings", C["INK"], 16),
+                "Réglages du réveil…" if has_wol else "Configurer le réveil (Wake-on-LAN)…",
+                lambda: self.wake_settings_requested.emit(dev),
+            )
         menu.addAction(icon("copy", C["INK"], 16), "Copier l'ID", lambda: _copy(dev))
         if entry is not None:
             menu.addSeparator()

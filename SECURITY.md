@@ -58,6 +58,13 @@ Chaque message est chiffré en AES-256-GCM avec le nonce `0⁴ ‖ compteur₆�
 - Mise en relation : chaque partie ouvre une connexion de données et signe `défi ‖ jeton`. Seules les deux clés attendues sont acceptées.
 - Le relais connaît les métadonnées : ID, adresses IP, horaires et volume des sessions. Il ne connaît ni le contenu, ni les noms des postes, ni les mots de passe.
 
+## Wake-on-LAN
+
+- Un paquet magique ne fait qu'allumer la machine : il ne donne **aucun accès**. Une connexion reste soumise à l'acceptation, ou au mot de passe et à la 2FA.
+- L'adresse MAC de l'hôte n'est transmise qu'aux postes **authentifiés et acceptés**, par le canal chiffré. On peut la désactiver dans Paramètres > Réseau.
+- Une adresse MAC reçue est validée strictement, et l'adresse de diffusion annoncée par un hôte est ignorée si ce n'est pas une IPv4.
+- Le protocole Wake-on-LAN n'est pas authentifié par nature. Rediriger un port UDP de votre box vers le réseau local permet à n'importe qui sur Internet d'allumer le PC (sans pouvoir s'y connecter). Le mot de passe SecureOn, si la carte réseau le gère, limite ce risque.
+
 ## Stockage local
 
 | Fichier | Contenu | Protection |

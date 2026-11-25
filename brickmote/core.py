@@ -22,6 +22,7 @@ from .host.session import HostSession
 from .net.discovery import Discovery
 from .net.framing import close_writer
 from .net.relay_client import RelayClient, RelayError
+from .net.wol import local_wol_info
 from .session import SessionEvents
 from .util import RateLimiter, normalize_id
 from .viewer.session import ViewerSession
@@ -184,8 +185,19 @@ class BrickMoteCore:
             return
         finally:
             self._pending -= 1
+        wol = None
+        if self.settings.share_wol_info:
+            try:
+                wol = await asyncio.to_thread(local_wol_info)
+            except Exception:  # noqa: BLE001 - best effort, never blocks a session
+                wol = None
         session = HostSession(
-            result, self.ui.host_events, downloads_dir(), quality=self.settings.quality, fps=self.settings.fps
+            result,
+            self.ui.host_events,
+            downloads_dir(),
+            quality=self.settings.quality,
+            fps=self.settings.fps,
+            wol_info=wol,
         )
         self.host_sessions.add(session)
         self.audit.write("session_start", peer=result.peer.device_id, ip=address, method=result.method)

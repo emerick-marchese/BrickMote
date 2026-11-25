@@ -8,7 +8,10 @@ import sys
 import time
 from typing import Optional
 
-from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer
+import asyncio
+import ipaddress
+
+from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QGuiApplication, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -37,7 +40,8 @@ from .. import __version__
 from ..core import BrickMoteCore
 from ..util import format_id, normalize_id, secure_write
 from .bridge import CoreThread, PendingRequest, QtCoreUI
-from .dialogs import AuditDialog, ChatDialog, HostSessionPanel, IncomingDialog, SettingsDialog
+from ..net.wol import WolError, send_magic_packet
+from .dialogs import AuditDialog, ChatDialog, HostSessionPanel, IncomingDialog, SettingsDialog, WakeDialog
 from .icons import icon, pixmap
 from .style import C, app_icon, avatar, logo, shadow
 from .viewer_window import ViewerWindow
@@ -94,6 +98,8 @@ def _scroll_page(title: str, subtitle: str, header: bool = True) -> tuple[QScrol
 
 
 class MainWindow(QMainWindow):
+    wake_result = Signal(str, bool)  # message, success (emitted from the network thread)
+
     def __init__(self, core: BrickMoteCore, core_thread: CoreThread, ui: QtCoreUI):
         super().__init__()
         self.core = core
@@ -229,6 +235,11 @@ class MainWindow(QMainWindow):
         self.password.setVisible(False)
         opt.addWidget(self.password)
         opt.addStretch(1)
+        self.btn_wake = QPushButton("  Réveiller un PC", objectName="WakeLink")
+        self.btn_wake.setIcon(icon("power", C["MUTED"], 16))
+        self.btn_wake.setToolTip("Envoyer un signal Wake-on-LAN (paquet magique) sur le port UDP de votre choix")
+        self.btn_wake.setCursor(Qt.PointingHandCursor)
+        opt.addWidget(self.btn_wake)
         bl.addLayout(opt)
         lay.addWidget(bar)
 
@@ -327,6 +338,10 @@ class MainWindow(QMainWindow):
         self.browser.rename_requested.connect(self._rename)
         self.browser.forget_requested.connect(self._forget)
         self.browser.view_changed.connect(self._set_view)
+        self.browser.wake_requested.connect(self._wake_device)
+        self.browser.wake_settings_requested.connect(self._wake_settings)
+        self.btn_wake.clicked.connect(self._wake_manual)
+        self.wake_result.connect(self.show_toast)
         self.nav_settings.clicked.connect(self.open_settings)
         self.nav_log.clicked.connect(lambda: AuditDialog(self.core.audit, self).exec())
         self.btn_connect.clicked.connect(self.connect_clicked)
@@ -553,6 +568,116 @@ class MainWindow(QMainWindow):
             self._thumb_cache.pop(dev, None)
             self._refresh_devices()
 
+    # ------------------------------------------------- Wake-on-LAN
+    def _wol_of(self, dev: str) -> Optional[dict]:
+        entry = self.core.known_hosts.entries().get(dev)
+        wol = entry.get("wol") if isinstance(entry, dict) else None
+        return wol if isinstance(wol, dict) and wol.get("mac") else None
+
+    def _label_of(self, dev: str) -> str:
+        entry = self.core.known_hosts.entries().get(dev) or {}
+        name = entry.get("alias") or entry.get("name") or ""
+        return f"{name} ({format_id(dev)})" if name else format_id(dev)
+
+    def learn_wol(self, dev: str, info: dict) -> None:
+        """A connected host told us its MAC: remember it for one-click wake."""
+        if not normalize_id(dev) or not info:
+            return
+        current = self._wol_of(dev) or {}
+        merged = {
+            "mac": info["mac"],
+            "address": current.get("address") or info.get("broadcast") or "255.255.255.255",
+            "port": current.get("port") or 9,
+            "secureon": current.get("secureon", ""),
+        }
+        if merged != current:
+            self.core.known_hosts.set_wol(dev, merged)
+            QTimer.singleShot(0, self._refresh_devices)
+
+    def wake_action_for(self, target: str):
+        """For the viewer's 'connection failed' dialog: a wake callback, or None."""
+        dev = normalize_id(target or "")
+        if dev and self._wol_of(dev):
+            return lambda: self._wake_device(dev)
+        return None
+
+    def _wake_device(self, dev: str):
+        wol = self._wol_of(dev)
+        if wol is None:
+            self._wake_settings(dev)
+            return
+        self._send_wake(wol, self._label_of(dev))
+
+    def _wake_settings(self, dev: str):
+        dlg = WakeDialog(self, self._wol_of(dev), self._label_of(dev), can_save=True)
+        if not dlg.exec():
+            return
+        if dlg.action == "save" or dlg.remember.isChecked():
+            self.core.known_hosts.set_wol(dev, dlg.values)
+            self._refresh_devices()
+        if dlg.action == "wake":
+            self._send_wake(dlg.values, self._label_of(dev))
+
+    def _wake_manual(self):
+        dlg = WakeDialog(self)
+        if dlg.exec() and dlg.action == "wake":
+            self._send_wake(dlg.values, dlg.values["mac"])
+
+    def _send_wake(self, wol: dict, label: str):
+        address = wol.get("address") or "255.255.255.255"
+        extra: tuple[str, ...] = ()
+        try:
+            if ipaddress.IPv4Address(address).is_private:
+                extra = ("255.255.255.255",)  # also the generic broadcast, more robust on some OS
+        except ValueError:
+            pass
+
+        def done(fut):
+            try:
+                targets = fut.result()
+            except (WolError, OSError) as exc:
+                self.wake_result.emit(f"Réveil de {label} impossible : {exc}", False)
+            else:
+                self.wake_result.emit(
+                    f"Signal de réveil envoyé à {label} via {targets[0]}.\n"
+                    "Le démarrage peut prendre jusqu'à une minute.",
+                    True,
+                )
+
+        fut = self.core_thread.submit(
+            asyncio.to_thread(
+                send_magic_packet, wol["mac"], address, int(wol.get("port") or 9), wol.get("secureon", ""), 3, extra
+            )
+        )
+        fut.add_done_callback(done)
+
+    # ------------------------------------------------------- toast
+    def show_toast(self, text: str, ok: bool = True):
+        if not hasattr(self, "_toast"):
+            self._toast = QLabel(self.centralWidget())
+            self._toast.setWordWrap(True)
+            self._toast.setMaximumWidth(460)
+            self._toast_timer = QTimer(self, singleShot=True, timeout=self._toast.hide)
+            shadow(self._toast, blur=16, dy=2, alpha=40)
+        self._toast.setObjectName("Toast" if ok else "ToastError")
+        self._toast.style().unpolish(self._toast)
+        self._toast.style().polish(self._toast)
+        self._toast.setText(text)
+        self._toast.adjustSize()
+        self._place_toast()
+        self._toast.show()
+        self._toast.raise_()
+        self._toast_timer.start(6000 if ok else 9000)
+
+    def _place_toast(self):
+        if hasattr(self, "_toast"):
+            area = self.centralWidget().rect()
+            self._toast.move(area.right() - self._toast.width() - 24, area.bottom() - self._toast.height() - 24)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_toast()
+
     def _set_view(self, view: str):
         self.core.settings.device_view = view
         self.core_thread.submit(_call(self.core.save_settings))
@@ -675,6 +800,8 @@ class MainWindow(QMainWindow):
             format_id(target) if target.replace(" ", "").isdigit() else target,
             on_thumbnail=self.save_thumbnail,
         )
+        win.on_wol_learned = self.learn_wol
+        win.wake_action = self.wake_action_for
         win.setWindowIcon(app_icon())
         win.setAttribute(Qt.WA_DeleteOnClose)
         win.destroyed.connect(lambda *_: self._viewers.remove(win) if win in self._viewers else None)
