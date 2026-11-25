@@ -66,6 +66,14 @@ Chaque message est chiffré en AES-256-GCM avec le nonce `0⁴ ‖ compteur₆�
 - Le certificat du relais est épinglé dans l'exécutable : un faux serveur placé sur le trajet est refusé.
 - Un nouveau certificat de relais ne contient plus le nom « BrickMote », que les moteurs de recherche de serveurs indexent. Le certificat d'un relais déjà installé est conservé tant qu'on ne le supprime pas (voir le README).
 
+## Mises à jour automatiques
+
+- La liste des empreintes de chaque release (`SHA256SUMS.txt`) est signée en Ed25519 (`SHA256SUMS.txt.sig`). La clé privée est un secret GitHub. Les clés publiques autorisées sont épinglées dans `brickmote/updater.py`, ce qui permet de changer de clé.
+- Un fichier n'est exécuté que s'il figure dans la liste signée **sous le nom exact de la nouvelle version** et que son SHA-256 correspond. Une ancienne release signée ne peut donc pas être republiée comme nouvelle version (pas de retour arrière).
+- Les téléchargements se font uniquement en HTTPS, avec une taille maximale. Un fichier refusé est supprimé immédiatement.
+- Windows : la tâche planifiée `BrickMote\Update` tourne en SYSTEM au démarrage. Elle télécharge dans le dossier d'installation (Program Files, non modifiable par un utilisateur ordinaire), ce qui empêche de substituer l'installateur entre la vérification et l'exécution.
+- Limite : une personne qui obtiendrait à la fois l'accès au dépôt GitHub **et** la possibilité d'exécuter des workflows pourrait utiliser le secret de signature. Protégez le compte GitHub par la double authentification.
+
 ## Wake-on-LAN
 
 - Un paquet magique ne fait qu'allumer la machine : il ne donne **aucun accès**. Une connexion reste soumise à l'acceptation, ou au mot de passe et à la 2FA.

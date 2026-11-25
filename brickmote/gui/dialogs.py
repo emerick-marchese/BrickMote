@@ -667,6 +667,14 @@ class SettingsDialog(QDialog):
         self.theme.setCurrentIndex(max(0, self.theme.findData(self.s.theme)))
         form.addRow("Thème", self.theme)
         form.addRow("", _label("Le changement de thème s'applique au prochain démarrage de BrickMote.", "Small", True))
+        self.check_updates = QCheckBox("Rechercher les nouvelles versions au démarrage")
+        self.check_updates.setChecked(self.s.check_updates)
+        form.addRow("Mises à jour", self.check_updates)
+        form.addRow("", _label(
+            "Les mises à jour sont signées : BrickMote refuse toute version dont la signature est invalide.",
+            "Small",
+            True,
+        ))
         self.thumbs = QCheckBox("Garder une miniature de l'écran des postes distants (onglet Récents)")
         self.thumbs.setChecked(self.s.save_thumbnails)
         form.addRow("Miniatures", self.thumbs)
@@ -914,6 +922,7 @@ class SettingsDialog(QDialog):
         s.fps = self.fps.value()
         s.theme = self.theme.currentData()
         s.save_thumbnails = self.thumbs.isChecked()
+        s.check_updates = self.check_updates.isChecked()
         s.interactive_enabled = self.interactive.isChecked()
         s.interactive_permissions = {k: cb.isChecked() for k, cb in self.inter_perms.items()}
         s.unattended_enabled = self.unattended.isChecked() and s.password_verifier() is not None

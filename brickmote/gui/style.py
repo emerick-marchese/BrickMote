@@ -171,6 +171,10 @@ QToolButton#RowStar:hover {{ background: {NEUTRAL_SOFT}; }}
 #DeviceRow {{ background: {CARD}; border: 1px solid {LINE}; border-radius: 2px; }}
 #DeviceRow:hover {{ border: 1px solid {BRICK}; }}
 
+/* update banner */
+#UpdateBanner {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {HERO_A}, stop:1 {HERO_B}); border: none; }}
+#UpdateText {{ color: white; }}
+
 /* toast notification */
 #Toast {{ background: {CARD}; color: {INK}; border: 1px solid {LINE}; border-left: 4px solid {OK};
          padding: 12px 16px; font-weight: 600; }}

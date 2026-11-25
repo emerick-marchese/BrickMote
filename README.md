@@ -58,6 +58,16 @@ Chaque release liste les empreintes SHA-256 des fichiers, pour vérifier qu'un t
 
 ## Installation
 
+### Mises à jour automatiques
+
+À partir de la version 1.0.1, chaque copie installée de BrickMote cherche une nouvelle version au démarrage, puis toutes les 12 heures :
+- **Windows (version installée)** : une tâche planifiée créée par l'installateur (option cochée par défaut) installe la nouvelle version **au démarrage du PC**, sans fenêtre ni clic, y compris sur un PC sans personne devant. Le bandeau « Nouvelle version disponible » permet aussi de l'installer tout de suite.
+- **Windows portable, macOS et Linux** : un bandeau propose de télécharger la nouvelle version.
+
+Chaque release est **signée** (Ed25519). Les copies installées refusent toute mise à jour dont la signature ou l'empreinte SHA-256 est incorrecte, ou qui ressert une ancienne version. La clé privée est le secret GitHub `BRICKMOTE_UPDATE_SIGNING_KEY`. La clé publique correspondante est dans `brickmote/updater.py`.
+
+Pour désactiver les mises à jour : décochez l'option dans l'installateur, ou *Paramètres > Général > Rechercher les nouvelles versions*.
+
 ### Publier une nouvelle version
 
 1. Mettez à jour `__version__` dans `brickmote/__init__.py` (et `pyproject.toml`).

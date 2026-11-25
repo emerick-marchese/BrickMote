@@ -27,7 +27,12 @@ def main(argv=None) -> int:
         "--minimized", action="store_true", help="démarrer dans la zone de notification (démarrage de Windows)"
     )
     parser.add_argument("--version", action="store_true", help="afficher la version et quitter")
+    parser.add_argument("--update-service", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.update_service:  # scheduled task (SYSTEM, at boot): no window at all
+        from ..updater import run_update_service
+
+        return run_update_service()
     if args.version:
         from .. import __version__
         from ..defaults import builtin_relay

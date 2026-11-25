@@ -9,9 +9,12 @@ import time
 from typing import Optional
 
 import asyncio
+import logging
+import tempfile
+from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QGuiApplication, QImage, QPixmap
+from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -39,6 +42,7 @@ from .. import __version__
 from ..core import BrickMoteCore
 from ..util import format_id, normalize_id, secure_write
 from .bridge import CoreThread, PendingRequest, QtCoreUI
+from .. import updater
 from ..net.wol import WolError, merge_wol, send_wake
 from .dialogs import AuditDialog, ChatDialog, HostSessionPanel, IncomingDialog, SettingsDialog, WakeDialog
 from .icons import icon, pixmap
@@ -98,6 +102,9 @@ def _scroll_page(title: str, subtitle: str, header: bool = True) -> tuple[QScrol
 
 class MainWindow(QMainWindow):
     wake_result = Signal(str, bool)  # message, success (emitted from the network thread)
+    update_found = Signal(object)  # updater.Release
+    update_installer_ready = Signal(object)  # Path of a verified installer
+    update_failed = Signal(str)
 
     def __init__(self, core: BrickMoteCore, core_thread: CoreThread, ui: QtCoreUI):
         super().__init__()
@@ -128,6 +135,9 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1500, self.refresh_identity)
         self._clock = QTimer(self, interval=30_000, timeout=self._refresh_devices)
         self._clock.start()
+        self._update_timer = QTimer(self, interval=12 * 3600 * 1000, timeout=self.check_updates)
+        self._update_timer.start()
+        QTimer.singleShot(8000, self.check_updates)
 
     # ================================================================ layout
     def _build(self):
@@ -203,6 +213,27 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- home
     def _build_home(self) -> QWidget:
         area, lay = _scroll_page("Accueil", "", header=False)
+
+        # "new version available" banner (hidden until an update is found)
+        self.update_banner = QFrame(objectName="UpdateBanner")
+        ub = QHBoxLayout(self.update_banner)
+        ub.setContentsMargins(16, 10, 10, 10)
+        ub.setSpacing(12)
+        up_icon = QLabel()
+        up_icon.setPixmap(pixmap("refresh", "#FFFFFF", 20))
+        ub.addWidget(up_icon)
+        self.update_text = QLabel("", objectName="UpdateText")
+        self.update_text.setWordWrap(True)
+        ub.addWidget(self.update_text, 1)
+        self.btn_update = QPushButton("", objectName="HeroButton")
+        self.btn_update.setCursor(Qt.PointingHandCursor)
+        ub.addWidget(self.btn_update)
+        later = QPushButton("Plus tard", objectName="HeroButton")
+        later.setCursor(Qt.PointingHandCursor)
+        later.clicked.connect(self.update_banner.hide)
+        ub.addWidget(later)
+        self.update_banner.hide()
+        lay.addWidget(self.update_banner)
 
         # connect bar
         bar = QFrame(objectName="ConnectBar")
@@ -341,6 +372,11 @@ class MainWindow(QMainWindow):
         self.browser.wake_settings_requested.connect(self._wake_settings)
         self.btn_wake.clicked.connect(self._wake_manual)
         self.wake_result.connect(self.show_toast)
+        self.update_found.connect(self._on_update_found)
+        self.update_installer_ready.connect(self._on_installer_ready)
+        self.update_failed.connect(lambda msg: self.show_toast(f"Mise à jour impossible : {msg}", False))
+        self.btn_update.clicked.connect(self._update_clicked)
+        self._release = None
         self.nav_settings.clicked.connect(self.open_settings)
         self.nav_log.clicked.connect(lambda: AuditDialog(self.core.audit, self).exec())
         self.btn_connect.clicked.connect(self.connect_clicked)
@@ -643,6 +679,70 @@ class MainWindow(QMainWindow):
 
         fut = self.core_thread.submit(asyncio.to_thread(send_wake, dict(wol)))
         fut.add_done_callback(done)
+
+    # --------------------------------------------------- mises à jour
+    def check_updates(self):
+        if not self.core.settings.check_updates:
+            return
+
+        def done(fut):
+            try:
+                release = fut.result()
+            except Exception as exc:  # noqa: BLE001 - offline, GitHub down...: try again later
+                logging.getLogger(__name__).info("update check failed: %s", exc)
+                return
+            if release is not None:
+                self.update_found.emit(release)
+
+        self.core_thread.submit(asyncio.to_thread(updater.check_for_update)).add_done_callback(done)
+
+    def _on_update_found(self, release):
+        self._release = release
+        kind = updater.install_kind()
+        if kind == "windows-installed":
+            self.update_text.setText(
+                f"<b>BrickMote {release.version} est disponible.</b> Elle s'installera automatiquement "
+                "au prochain démarrage du PC, ou dès maintenant si vous le souhaitez."
+            )
+            self.btn_update.setText("Installer maintenant")
+        else:
+            self.update_text.setText(f"<b>BrickMote {release.version} est disponible.</b>")
+            self.btn_update.setText("Télécharger")
+        self.update_banner.show()
+        if self.tray:
+            self.tray.showMessage("BrickMote", f"Nouvelle version disponible : {release.version}")
+
+    def _update_clicked(self):
+        release = self._release
+        if release is None:
+            return
+        if updater.install_kind() != "windows-installed":
+            QDesktopServices.openUrl(QUrl(release.page))
+            return
+        self.btn_update.setEnabled(False)
+        self.btn_update.setText("Téléchargement…")
+        name = updater.asset_name(release.version, "windows-installed")
+        target = Path(tempfile.mkdtemp(prefix="brickmote-update-"))
+
+        def done(fut):
+            try:
+                self.update_installer_ready.emit(fut.result())
+            except Exception as exc:  # noqa: BLE001
+                self.update_failed.emit(str(exc))
+
+        self.core_thread.submit(
+            asyncio.to_thread(updater.download_verified, release, name, target)
+        ).add_done_callback(done)
+
+    def _on_installer_ready(self, path):
+        try:
+            updater.launch_installer_elevated(path)  # Windows asks for confirmation (UAC)
+        except Exception as exc:  # noqa: BLE001
+            self.btn_update.setEnabled(True)
+            self.btn_update.setText("Installer maintenant")
+            self.show_toast(f"Mise à jour non installée : {exc}", False)
+            return
+        self.quit()  # the installer replaces the files, then restarts BrickMote
 
     # ------------------------------------------------------- toast
     def show_toast(self, text: str, ok: bool = True):

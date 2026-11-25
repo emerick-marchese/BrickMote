@@ -46,6 +46,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "startup"; Description: "Lancer BrickMote au démarrage de Windows (dans la zone de notification, pour rester joignable)"; GroupDescription: "Options :"; Flags: unchecked
+Name: "autoupdate"; Description: "Mises à jour automatiques, installées au démarrage du PC (signature vérifiée)"; GroupDescription: "Options :"
 Name: "firewall"; Description: "Autoriser les connexions directes (TCP 7070) et la découverte (UDP 50001) dans le pare-feu, sur les réseaux privés uniquement"; GroupDescription: "Options :"
 
 [Files]
@@ -63,11 +64,26 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""BrickMote (UDP 50001)"""; Flags: runhidden; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""BrickMote (TCP 7070)"" dir=in action=allow program=""{app}\BrickMote.exe"" protocol=TCP localport=7070 profile=private"; Flags: runhidden; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""BrickMote (UDP 50001)"" dir=in action=allow program=""{app}\BrickMote.exe"" protocol=UDP localport=50001 profile=private"; Flags: runhidden; Tasks: firewall
+; Automatic updates: a SYSTEM task checks for a signed new version at every boot
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""BrickMote\Update"""; Flags: runhidden; Check: not WizardIsTaskSelected('autoupdate')
+Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /RU SYSTEM /RL HIGHEST /SC ONSTART /DELAY 0002:00 /TN ""BrickMote\Update"" /TR ""\""{app}\BrickMote.exe\"" --update-service"""; Flags: runhidden; Tasks: autoupdate
 Filename: "{app}\BrickMote.exe"; Description: "{cm:LaunchProgram,BrickMote}"; Flags: nowait postinstall skipifsilent
+; After an update started from the application ("Installer maintenant"): restart it
+Filename: "{app}\BrickMote.exe"; Flags: nowait runasoriginaluser; Check: RelaunchRequested
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\updates"
 
 [UninstallRun]
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""BrickMote\Update"""; Flags: runhidden; RunOnceId: "DelUpdateTask"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""BrickMote (TCP 7070)"""; Flags: runhidden; RunOnceId: "DelFirewallTcp"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""BrickMote (UDP 50001)"""; Flags: runhidden; RunOnceId: "DelFirewallUdp"
 
 [Messages]
 french.WelcomeLabel2=Cet assistant va installer [name/ver] sur votre ordinateur.%n%nBrickMote est un logiciel de bureau à distance chiffré de bout en bout. Vos réglages et votre ID sont conservés lors d'une mise à jour ou d'une désinstallation.
+
+[Code]
+function RelaunchRequested: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;

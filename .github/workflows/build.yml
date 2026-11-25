@@ -115,6 +115,16 @@ jobs:
           merge-multiple: true
       - name: Empreintes SHA-256
         run: cd assets && sha256sum * | tee SHA256SUMS.txt
+      - name: Signature des mises à jour (Ed25519)
+        env:
+          BRICKMOTE_UPDATE_SIGNING_KEY: ${{ secrets.BRICKMOTE_UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$BRICKMOTE_UPDATE_SIGNING_KEY" ]; then
+            echo "::warning::Release non signée : les PC installés ne s'y mettront pas à jour automatiquement (secret BRICKMOTE_UPDATE_SIGNING_KEY absent)."
+            exit 0
+          fi
+          pip install --quiet cryptography
+          python packaging/sign_release.py assets/SHA256SUMS.txt
       - name: Créer la release GitHub
         env:
           GH_TOKEN: ${{ github.token }}
