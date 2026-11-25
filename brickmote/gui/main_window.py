@@ -39,7 +39,7 @@ from ..util import format_id
 from .bridge import CoreThread, PendingRequest, QtCoreUI
 from .dialogs import AuditDialog, ChatDialog, HostSessionPanel, IncomingDialog, SettingsDialog
 from .icons import icon, pixmap
-from .style import MUTED, app_icon, avatar, logo, shadow
+from .style import C, app_icon, avatar, logo, shadow
 from .viewer_window import ViewerWindow
 from .widgets import Card, DeviceCard, EmptyState, FlowLayout, StatusRow, relative_time, section_header
 
@@ -214,7 +214,7 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         row.setSpacing(10)
         search = QLabel()
-        search.setPixmap(pixmap("search", MUTED, 22))
+        search.setPixmap(pixmap("search", C["MUTED"], 22))
         row.addWidget(search)
         self.target = QLineEdit(objectName="TargetInput")
         self.target.setPlaceholderText("Saisissez l'ID (123 456 789) ou l'adresse IP du poste distant")
@@ -586,10 +586,10 @@ class MainWindow(QMainWindow):
         pill = QLabel("● En cours", objectName="PillOk")
         row.addWidget(pill, alignment=Qt.AlignVCenter)
         chat = QPushButton("  Chat")
-        chat.setIcon(icon("chat", "#374151", 16))
+        chat.setIcon(icon("chat", C["ICON"], 16))
         chat.clicked.connect(lambda _=False, s=session: self._open_host_chat(s))
         send = QPushButton("  Fichier")
-        send.setIcon(icon("file", "#374151", 16))
+        send.setIcon(icon("file", C["ICON"], 16))
         send.clicked.connect(lambda _=False, s=session: self._host_send_file(s))
         stop = QPushButton("  Déconnecter", objectName="Primary")
         stop.setIcon(icon("power", "#FFFFFF", 16))
@@ -614,11 +614,11 @@ class MainWindow(QMainWindow):
             if e.get("reason"):
                 parts.append(str(e["reason"]))
             item = QListWidgetItem("    ".join(parts))
-            color = {"auth_failure": "#DC2626", "refused": "#D97706", "accepted": "#16A34A"}.get(event)
+            color = {"auth_failure": C["DANGER"], "refused": C["WARN"], "accepted": C["OK"]}.get(event)
             if color:
                 item.setIcon(icon({"auth_failure": "alert", "refused": "x", "accepted": "check"}[event], color, 16))
             else:
-                item.setIcon(icon("clock", "#9AA1AD", 16))
+                item.setIcon(icon("clock", C["FAINT"], 16))
             self.activity.addItem(item)
         if self.activity.count() == 0:
             self.activity.addItem("Aucune activité enregistrée.")

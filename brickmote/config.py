@@ -65,6 +65,7 @@ class Settings:
     # Display
     quality: str = "balanced"  # low | balanced | high
     fps: int = 20
+    theme: str = "dark"  # dark | light
 
     def password_verifier(self) -> Optional[PasswordVerifier]:
         if not self.password:
@@ -93,6 +94,8 @@ class Settings:
             self.direct_port = DIRECT_PORT
         if self.quality not in ("low", "balanced", "high"):
             self.quality = "balanced"
+        if self.theme not in ("dark", "light"):
+            self.theme = "dark"
         self.fps = max(1, min(60, int(self.fps))) if isinstance(self.fps, int) else 20
         for name in ("interactive_permissions", "unattended_permissions"):
             perms = getattr(self, name)

@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from ..util import format_id
 from .icons import pixmap
-from .style import FAINT, MUTED, OK, avatar, shadow
+from .style import C, avatar, shadow
 
 
 def restyle(widget: QWidget, object_name: str) -> None:
@@ -134,7 +134,7 @@ class DeviceCard(QFrame):
         else:  # unknown device (seen on the LAN only): neutral icon instead of initials
             av.setObjectName("IconBubble")
             av.setAlignment(Qt.AlignCenter)
-            av.setPixmap(pixmap("devices", "#4B5563", 22))
+            av.setPixmap(pixmap("devices", C["ICON"], 22))
         lay.addWidget(av)
         text = QVBoxLayout()
         text.setSpacing(1)
@@ -145,14 +145,14 @@ class DeviceCard(QFrame):
         tag_row = QHBoxLayout()
         tag_row.setSpacing(5)
         dot = QLabel("●")
-        dot.setStyleSheet(f"color: {OK if online else FAINT}; font-size: 7pt;")
+        dot.setStyleSheet(f"color: {C['OK'] if online else C['FAINT']}; font-size: 7pt;")
         tag_row.addWidget(dot)
         tag_row.addWidget(QLabel(tag, objectName="DeviceTag"))
         tag_row.addStretch(1)
         text.addLayout(tag_row)
         lay.addLayout(text, 1)
         arrow = QLabel()
-        arrow.setPixmap(pixmap("arrow", MUTED, 18))
+        arrow.setPixmap(pixmap("arrow", C["MUTED"], 18))
         lay.addWidget(arrow, alignment=Qt.AlignVCenter)
         shadow(self, blur=8, dy=1, alpha=12)
 
@@ -180,7 +180,7 @@ class StatusRow(QWidget):
         bubble = QLabel(objectName="IconBubble")
         bubble.setFixedSize(38, 38)
         bubble.setAlignment(Qt.AlignCenter)
-        bubble.setPixmap(pixmap(icon_name, "#374151", 19))
+        bubble.setPixmap(pixmap(icon_name, C["ICON"], 19))
         lay.addWidget(bubble, alignment=Qt.AlignTop)
         text = QVBoxLayout()
         text.setSpacing(2)

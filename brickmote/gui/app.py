@@ -37,19 +37,20 @@ def main(argv=None) -> int:
     from ..core import BrickMoteCore
     from .bridge import CoreThread, QtCoreUI
     from .main_window import MainWindow
-    from .style import app_icon, apply_font, stylesheet
+    from ..config import Settings
+    from .style import app_icon, apply_font, apply_theme
 
     app = QApplication(sys.argv if argv is None else ["brickmote", *argv])
     app.setApplicationName("BrickMote")
     app.setOrganizationName("BrickMote")
     app.setStyle("Fusion")
     apply_font(app)
-    app.setStyleSheet(stylesheet())
     app.setWindowIcon(app_icon())
     app.setQuitOnLastWindowClosed(False)
 
     paths = Paths(Path(args.home) if args.home else None)
     paths.base.mkdir(parents=True, exist_ok=True)
+    apply_theme(app, Settings.load(paths.settings).theme)
     lock = QLockFile(str(paths.base / "brickmote.lock"))
     if not lock.tryLock(100):
         QMessageBox.information(None, "BrickMote", "BrickMote est déjà en cours d'exécution.")

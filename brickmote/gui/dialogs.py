@@ -42,7 +42,7 @@ from ..crypto.password import (
 )
 from ..util import format_id, normalize_id
 from .bridge import PendingRequest
-from .style import logo
+from .style import C, logo
 
 PERM_LABELS = {
     "control": "Contrôler la souris et le clavier",
@@ -219,7 +219,10 @@ class HostSessionPanel(QWidget):
         self.session = session
         peer = session.peer
         self.setWindowTitle("BrickMote - Session active")
-        self.setStyleSheet("QWidget#Panel { background: white; border: 1px solid #D2463C; border-top: 4px solid #D2463C; border-radius: 0; }")
+        self.setStyleSheet(
+            f"QWidget#Panel {{ background: {C['CARD']}; border: 1px solid {C['BRICK']}; "
+            f"border-top: 4px solid {C['BRICK']}; border-radius: 0; }}"
+        )
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         panel = QWidget(objectName="Panel")
@@ -521,6 +524,12 @@ class SettingsDialog(QDialog):
         form.addRow("Qualité d'image envoyée", self.quality)
         self.fps = QSpinBox(minimum=1, maximum=60, value=self.s.fps, suffix=" images/s")
         form.addRow("Fréquence maximale", self.fps)
+        self.theme = QComboBox()
+        self.theme.addItem("Sombre", "dark")
+        self.theme.addItem("Clair", "light")
+        self.theme.setCurrentIndex(max(0, self.theme.findData(self.s.theme)))
+        form.addRow("Thème", self.theme)
+        form.addRow("", _label("Le changement de thème s'applique au prochain démarrage de BrickMote.", "Small", True))
         return w
 
     def _security_tab(self):
@@ -667,6 +676,7 @@ class SettingsDialog(QDialog):
         s.device_name = self.name.text().strip()[:64] or s.device_name
         s.quality = self.quality.currentData()
         s.fps = self.fps.value()
+        s.theme = self.theme.currentData()
         s.interactive_enabled = self.interactive.isChecked()
         s.interactive_permissions = {k: cb.isChecked() for k, cb in self.inter_perms.items()}
         s.unattended_enabled = self.unattended.isChecked() and s.password_verifier() is not None
