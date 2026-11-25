@@ -49,6 +49,17 @@ jobs:
       - run: python packaging/make_icon.py
         env:
           QT_QPA_PLATFORM: offscreen
+      - name: Serveur relais par défaut (secret, jamais dans le code source)
+        shell: bash
+        env:
+          BRICKMOTE_DEFAULT_RELAY: ${{ secrets.BRICKMOTE_DEFAULT_RELAY }}
+          BRICKMOTE_DEFAULT_RELAY_FP: ${{ secrets.BRICKMOTE_DEFAULT_RELAY_FP }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          python packaging/embed_relay.py
+          if [ -z "$BRICKMOTE_DEFAULT_RELAY" ] && [ -n "$RELEASE_VERSION" ]; then
+            echo "::warning::Release sans serveur relais par défaut : ajoutez les secrets BRICKMOTE_DEFAULT_RELAY et BRICKMOTE_DEFAULT_RELAY_FP."
+          fi
       - name: Application (exe portable Windows / BrickMote.app macOS)
         if: runner.os != 'Linux'
         run: pyinstaller --noconfirm --workpath build/portable packaging/brickmote.spec

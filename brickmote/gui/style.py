@@ -196,7 +196,15 @@ QPushButton#Danger:hover {{ background: {BRICK_SOFT}; }}
 QPushButton#Ghost {{ background: transparent; border: none; color: {MUTED}; padding: 6px 8px; }}
 QPushButton#Ghost:hover {{ color: {BRICK}; }}
 QPushButton:disabled {{ color: {DISABLED_FG}; background: {DISABLED_BG}; border-color: {LINE}; }}
-QCheckBox {{ spacing: 8px; }}
+QCheckBox, QRadioButton {{ spacing: 8px; }}
+QRadioButton::indicator {{ width: 14px; height: 14px; border-radius: 8px; border: 2px solid {CHECK_BORDER}; background: {INPUT_BG}; }}
+QRadioButton::indicator:hover {{ border-color: {BRICK}; }}
+QRadioButton::indicator:checked {{
+    border: 2px solid {BRICK};
+    background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
+                                stop:0 {BRICK}, stop:0.55 {BRICK}, stop:0.62 {INPUT_BG}, stop:1 {INPUT_BG});
+}}
+QRadioButton:disabled, QCheckBox:disabled {{ color: {DISABLED_FG}; }}
 QCheckBox::indicator {{ width: 18px; height: 18px; border-radius: 2px; border: 1.5px solid {CHECK_BORDER}; background: {INPUT_BG}; }}
 QCheckBox::indicator:hover {{ border-color: {BRICK}; }}
 QCheckBox::indicator:checked {{ background: {BRICK}; border-color: {BRICK}; image: url(__CHECK__); }}

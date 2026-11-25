@@ -26,7 +26,15 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--minimized", action="store_true", help="démarrer dans la zone de notification (démarrage de Windows)"
     )
+    parser.add_argument("--version", action="store_true", help="afficher la version et quitter")
     args = parser.parse_args(argv)
+    if args.version:
+        from .. import __version__
+        from ..defaults import builtin_relay
+
+        has_default = builtin_relay() is not None
+        print(f"BrickMote {__version__} - serveur relais par défaut : {'intégré' if has_default else 'aucun'}")
+        return 0
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,

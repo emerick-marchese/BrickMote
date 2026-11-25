@@ -463,10 +463,14 @@ class MainWindow(QMainWindow):
 
     def _on_relay_status(self, state: str, detail: str):
         if state == "online":
-            self.row_relay.set("En ligne", "ok", f"Joignable par ID depuis Internet ({detail})")
+            where = "" if self.core.relay_masked else f" ({detail})"
+            self.row_relay.set("En ligne", "ok", f"Joignable par ID depuis Internet{where}")
         elif state == "connecting":
-            self.row_relay.set("Connexion…", "warn", f"Connexion à {detail}")
+            where = "au serveur BrickMote" if self.core.relay_masked else f"à {detail}"
+            self.row_relay.set("Connexion…", "warn", f"Connexion {where}")
         elif state == "offline":
+            if self.core.relay_masked and detail[:1].islower():
+                detail = f"Serveur BrickMote {detail}"
             self.row_relay.set("Hors ligne", "danger", detail or "Serveur injoignable")
         else:
             self.row_relay.set("Non configuré", "neutral", "Réseau local et IP directe uniquement")
@@ -755,6 +759,7 @@ class MainWindow(QMainWindow):
             self,
             clear_thumbnails=self.clear_thumbnails,
             public_ip=self.core.public_ip or "",
+            builtin_relay=self.core.builtin_relay is not None,
         )
         if dlg.exec():
             new = dlg.result_settings()

@@ -50,6 +50,7 @@ class RelayClient:
         fingerprint: str,
         on_incoming: Optional[IncomingHandler],
         on_status: Optional[StatusHandler] = None,
+        display_name: Optional[str] = None,
     ):
         self.identity = identity
         self.host = host
@@ -57,6 +58,9 @@ class RelayClient:
         self.fingerprint = fingerprint
         self.on_incoming = on_incoming
         self.on_status = on_status or (lambda s, d: None)
+        # When set (built-in server), the address and raw network errors —
+        # which contain the IP — are never reported: only this name is.
+        self.display_name = display_name
         self._writer: Optional[asyncio.StreamWriter] = None
         self._port: Optional[int] = None
         self._rid = itertools.count(1)
@@ -97,7 +101,7 @@ class RelayClient:
     async def _run(self) -> None:
         backoff = 1.0
         while not self._stopped:
-            self.on_status("connecting", f"{self.host}")
+            self.on_status("connecting", self.display_name or self.host)
             try:
                 reader, writer, port = await self._open()
                 challenge = await asyncio.wait_for(read_json(reader, MAX_CONTROL_FRAME), 10)
@@ -118,15 +122,17 @@ class RelayClient:
                 self._writer, self._port = writer, port
                 self.online.set()
                 backoff = 1.0
-                self.on_status("online", f"{self.host}:{port}")
+                self.on_status("online", self.display_name or f"{self.host}:{port}")
                 await self._read_loop(reader, writer)
             except asyncio.CancelledError:
                 raise
             except PinError as exc:
                 self.on_status("offline", str(exc))
                 backoff = 60.0
-            except (OSError, ConnectionError, asyncio.TimeoutError, FrameError, ValueError, RelayError) as exc:
-                self.on_status("offline", str(exc) or exc.__class__.__name__)
+            except RelayError as exc:
+                self.on_status("offline", str(exc))
+            except (OSError, ConnectionError, asyncio.TimeoutError, FrameError, ValueError) as exc:
+                self.on_status("offline", self.describe(exc))
             finally:
                 self.online.clear()
                 await close_writer(self._writer)
@@ -199,11 +205,19 @@ class RelayClient:
             try:
                 reader, writer = await self._open_data(token)
             except Exception as exc:  # noqa: BLE001
-                log.info("incoming relay connection failed: %s", exc)
+                log.info("incoming relay connection failed: %s", self.describe(exc))
                 return
             await self.on_incoming(reader, writer, from_id, from_pub)
 
         asyncio.get_running_loop().create_task(handle())
+
+    def describe(self, exc: BaseException) -> str:
+        """Human readable error, without the server address when it is masked."""
+        if self.display_name:
+            if isinstance(exc, asyncio.TimeoutError):
+                return "délai dépassé (vérifiez votre connexion Internet)"
+            return "injoignable (vérifiez votre connexion Internet)"
+        return str(exc) or exc.__class__.__name__
 
     async def decline(self, token: str) -> None:
         if self._writer is not None:

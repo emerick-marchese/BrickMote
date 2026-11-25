@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QFrame,
     QSpinBox,
@@ -611,8 +612,10 @@ class SettingsDialog(QDialog):
         parent=None,
         clear_thumbnails: Optional[Callable[[], None]] = None,
         public_ip: str = "",
+        builtin_relay: bool = False,
     ):
         super().__init__(parent)
+        self._builtin_relay = builtin_relay
         self._clear_thumbnails = clear_thumbnails
         self._public_ip = public_ip
         self.setWindowTitle("BrickMote - Paramètres")
@@ -756,9 +759,23 @@ class SettingsDialog(QDialog):
     def _network_tab(self):
         w = QWidget()
         lay = QVBoxLayout(w)
-        relay = QGroupBox("Serveur relais BrickMote (auto-hébergé)")
-        form = QFormLayout(relay)
-        self.relay_host = QLineEdit(self.s.relay_host, placeholderText="relais.mondomaine.fr (vide = réseau local uniquement)")
+        relay = QGroupBox("Serveur relais (connexion par ID via Internet)")
+        rl = QVBoxLayout(relay)
+        self.relay_default = QRadioButton("Serveur BrickMote (par défaut)")
+        self.relay_custom = QRadioButton("Mon propre serveur relais")
+        self.relay_off = QRadioButton("Aucun (réseau local et adresse IP directe uniquement)")
+        if self._builtin_relay:
+            default_hint = "Connexion chiffrée vers un serveur dont le certificat est vérifié."
+        else:
+            default_hint = "Non disponible dans cette version de BrickMote."
+            self.relay_default.setEnabled(False)
+        rl.addWidget(self.relay_default)
+        rl.addWidget(_label(default_hint, "Small", True))
+        rl.addWidget(self.relay_custom)
+        custom = QWidget()
+        form = QFormLayout(custom)
+        form.setContentsMargins(26, 0, 0, 0)
+        self.relay_host = QLineEdit(self.s.relay_host, placeholderText="relais.mondomaine.fr ou IP")
         self.relay_ports = QLineEdit(",".join(map(str, self.s.relay_ports)))
         self.relay_fp = QLineEdit(self.s.relay_fingerprint, placeholderText="empreinte SHA-256 affichée par le serveur")
         form.addRow("Adresse", self.relay_host)
@@ -770,6 +787,14 @@ class SettingsDialog(QDialog):
             "Small",
             True,
         ))
+        rl.addWidget(custom)
+        rl.addWidget(self.relay_off)
+        mode = self.s.relay_mode
+        if mode == "default" and not self._builtin_relay:
+            mode = "off"
+        {"default": self.relay_default, "custom": self.relay_custom, "off": self.relay_off}[mode].setChecked(True)
+        self.relay_custom.toggled.connect(custom.setEnabled)
+        custom.setEnabled(self.relay_custom.isChecked())
         lay.addWidget(relay)
         direct = QGroupBox("Connexions directes")
         dl = QFormLayout(direct)
@@ -896,7 +921,16 @@ class SettingsDialog(QDialog):
         s.acl_enabled = self.acl_enabled.isChecked()
         s.acl = self.acl.entries()
         s.blocked = self.blocked.ids()
+        if self.relay_custom.isChecked():
+            s.relay_mode = "custom"
+        elif self.relay_default.isChecked():
+            s.relay_mode = "default"
+        else:
+            s.relay_mode = "off"
         s.relay_host = self.relay_host.text().strip()
+        if s.relay_mode == "custom" and not s.relay_host:
+            QMessageBox.warning(self, "BrickMote", "Indiquez l'adresse de votre serveur relais.")
+            return
         try:
             ports = [int(p) for p in self.relay_ports.text().replace(" ", "").split(",") if p]
         except ValueError:

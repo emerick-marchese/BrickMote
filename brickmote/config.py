@@ -42,7 +42,9 @@ def _default_perms(control: bool = True) -> dict:
 @dataclass
 class Settings:
     device_name: str = field(default_factory=lambda: platform.node() or "BrickMote")
-    # Relay / rendezvous server (self-hosted). Empty host = LAN/direct only.
+    # Relay / rendezvous server: "default" = server built into this version
+    # (address never shown), "custom" = the fields below, "off" = LAN/direct only.
+    relay_mode: str = "default"
     relay_host: str = ""
     relay_ports: list = field(default_factory=lambda: list(RELAY_PORTS))
     relay_fingerprint: str = ""  # SHA-256 of the relay TLS certificate (pinning)
@@ -88,6 +90,8 @@ class Settings:
         except (OSError, ValueError):
             return cls()
         known = {f.name for f in fields(cls)}
+        if isinstance(data, dict) and "relay_mode" not in data and str(data.get("relay_host", "")).strip():
+            data["relay_mode"] = "custom"  # settings from before the built-in server existed
         s = cls(**{k: v for k, v in data.items() if k in known})
         s.validate()
         return s
@@ -100,6 +104,8 @@ class Settings:
             self.direct_port = DIRECT_PORT
         if self.quality not in ("low", "balanced", "high"):
             self.quality = "balanced"
+        if self.relay_mode not in ("default", "custom", "off"):
+            self.relay_mode = "default"
         if self.theme not in ("dark", "light"):
             self.theme = "dark"
         if not isinstance(self.wol_box_port, int) or not 0 < self.wol_box_port < 65536:

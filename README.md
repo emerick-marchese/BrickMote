@@ -135,6 +135,18 @@ Après une première session, le poste client a reçu (par le canal chiffré) l'
 
 ## Serveur relais (connexion par ID via Internet)
 
+### Serveur par défaut intégré aux exécutables
+
+Les exécutables publiés peuvent intégrer un serveur relais par défaut. Les utilisateurs n'ont alors rien à configurer, et l'adresse du serveur n'apparaît jamais dans l'application. Elle ne figure pas non plus dans le code source : la compilation la lit dans deux **secrets GitHub** du dépôt (*Settings > Secrets and variables > Actions*) :
+
+| Secret | Valeur |
+|---|---|
+| `BRICKMOTE_DEFAULT_RELAY` | `hôte:port`, ex. `203.0.113.10:25001` ou `relais.mondomaine.fr:6568,443` |
+| `BRICKMOTE_DEFAULT_RELAY_FP` | l'empreinte SHA-256 affichée par la console du relais |
+
+`packaging/embed_relay.py` les intègre à l'exécutable sous forme brouillée. C'est de l'obscurcissement, pas du chiffrement : l'application doit se connecter à ce serveur, donc un outil réseau montre toujours où elle se connecte. Chaque utilisateur peut choisir un autre serveur, ou aucun, dans *Paramètres > Réseau*.
+
+
 Sans relais, BrickMote fonctionne sur le réseau local (par ID ou par IP) et par IP directe. Pour joindre un poste par son ID à travers Internet et les box ou NAT, hébergez votre propre relais sur un serveur (VPS, Raspberry Pi avec redirection de ports…).
 
 ### Avec Docker

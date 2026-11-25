@@ -223,3 +223,47 @@ async def test_host_sends_box_address_for_wake(tmp_path):
     await session.close()
     await viewer.stop()
     await host.stop()
+
+
+async def test_builtin_relay_address_is_never_shown(tmp_path, relay, monkeypatch):
+    from brickmote.defaults import BuiltinRelay
+
+    port, fp = relay
+    monkeypatch.setattr(core_mod, "builtin_relay", lambda: BuiltinRelay("127.0.0.1", (port,), fp.replace(":", "").lower()))
+    statuses = []
+
+    host, host_ui = make_core(tmp_path, "host", direct_enabled=False)
+    viewer, viewer_ui = make_core(tmp_path, "viewer", direct_enabled=False)
+    viewer_ui.relay_status = lambda state, detail: statuses.append((state, detail))
+    await host.start()
+    await viewer.start()
+    await wait_online(host)
+    await wait_online(viewer)
+    assert viewer.relay_masked
+    session = await viewer.connect(host.identity.device_id, None, Recorder())
+    assert session.peer.device_id == host.identity.device_id
+    await session.close()
+    await host.stop()
+    # the relay goes away: the error must not reveal its address either
+    await viewer._relay.stop()
+    viewer._relay.online.set()
+    viewer._relay._writer = None
+    with pytest.raises(ConnectError) as err:
+        await viewer.connect(host.identity.device_id, None, Recorder())
+    shown = " ".join(d for _, d in statuses) + " " + str(err.value)
+    assert statuses and "127.0.0.1" not in shown and str(port) not in shown
+    await viewer.stop()
+
+
+async def test_custom_relay_mode_shows_its_address(tmp_path, relay):
+    port, fp = relay
+    statuses = []
+    viewer, viewer_ui = make_core(
+        tmp_path, "viewer", relay_mode="custom", relay_host="127.0.0.1", relay_ports=[port], relay_fingerprint=fp
+    )
+    viewer_ui.relay_status = lambda state, detail: statuses.append((state, detail))
+    await viewer.start()
+    await wait_online(viewer)
+    assert not viewer.relay_masked
+    assert any("127.0.0.1" in d for s, d in statuses if s == "online")
+    await viewer.stop()

@@ -84,7 +84,9 @@ def generate_self_signed(cert_path: Path, key_path: Path, hostnames: list[str]) 
             names.append(x509.IPAddress(ipaddress.ip_address(h)))
         except ValueError:
             names.append(x509.DNSName(h))
-    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "BrickMote Relay")])
+    # Neutral subject: internet scanners index certificate names, so the
+    # certificate must not reveal that this machine is a BrickMote relay.
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, (hostnames or ["localhost"])[0][:64])])
     now = datetime.datetime.now(datetime.timezone.utc)
     cert = (
         x509.CertificateBuilder()

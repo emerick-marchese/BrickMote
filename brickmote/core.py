@@ -21,6 +21,7 @@ from .host.authority import HostPolicy
 from .host.session import HostSession
 from .net.discovery import Discovery
 from .net.framing import close_writer
+from .defaults import DISPLAY_NAME, builtin_relay
 from .net.relay_client import RelayClient, RelayError
 from .net.wol import local_wol_info
 from .session import SessionEvents
@@ -81,6 +82,7 @@ class BrickMoteCore:
         self._direct_port: Optional[int] = None
         self._relay: Optional[RelayClient] = None
         self._relay_conf: Optional[tuple] = None
+        self.builtin_relay = builtin_relay()
         self._discovery: Optional[Discovery] = None
         self._ip_limiter = RateLimiter(limit=20, window=60)
         self._pending = 0
@@ -110,15 +112,22 @@ class BrickMoteCore:
                 except OSError as exc:
                     log.warning("cannot listen on TCP %s: %s", want_port, exc)
         # relay
-        conf = (s.relay_host.strip(), tuple(s.relay_ports), s.relay_fingerprint.strip()) if s.relay_host.strip() else None
+        conf = self._relay_config()
         if conf != self._relay_conf:
             if self._relay is not None:
                 await self._relay.stop()
                 self._relay = None
             self._relay_conf = conf
             if conf:
+                host, ports, fingerprint, masked = conf
                 self._relay = RelayClient(
-                    self.identity, conf[0], list(conf[1]), conf[2], self._on_relay_incoming, self.ui.relay_status
+                    self.identity,
+                    host,
+                    list(ports),
+                    fingerprint,
+                    self._on_relay_incoming,
+                    self.ui.relay_status,
+                    display_name=DISPLAY_NAME if masked else None,
                 )
                 self._relay.start()
             else:
@@ -139,6 +148,23 @@ class BrickMoteCore:
             await self._discovery.stop()
             self._discovery = None
             self.ui.lan_peers_changed({})
+
+    def _relay_config(self) -> Optional[tuple]:
+        """(host, ports, fingerprint, masked) of the relay to use, or None."""
+        s = self.settings
+        if s.relay_mode == "off":
+            return None
+        if s.relay_mode == "custom":
+            host = s.relay_host.strip()
+            return (host, tuple(s.relay_ports), s.relay_fingerprint.strip(), False) if host else None
+        builtin = self.builtin_relay
+        if builtin is None:
+            return None
+        return (builtin.host, builtin.ports, builtin.fingerprint, True)
+
+    @property
+    def relay_masked(self) -> bool:
+        return bool(self._relay_conf and self._relay_conf[3])
 
     @property
     def direct_port(self) -> Optional[int]:
@@ -259,7 +285,7 @@ class BrickMoteCore:
         except RelayError as exc:
             raise ConnectError(str(exc)) from exc
         except (OSError, asyncio.TimeoutError) as exc:
-            raise ConnectError(f"Serveur relais injoignable : {exc}") from exc
+            raise ConnectError(f"Serveur relais {self._relay.describe(exc)}") from exc
         yield reader, writer, device_id, pub, "relais"
 
     async def connect(

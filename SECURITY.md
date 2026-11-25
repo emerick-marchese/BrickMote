@@ -58,6 +58,14 @@ Chaque message est chiffré en AES-256-GCM avec le nonce `0⁴ ‖ compteur₆�
 - Mise en relation : chaque partie ouvre une connexion de données et signe `défi ‖ jeton`. Seules les deux clés attendues sont acceptées.
 - Le relais connaît les métadonnées : ID, adresses IP, horaires et volume des sessions. Il ne connaît ni le contenu, ni les noms des postes, ni les mots de passe.
 
+## Serveur relais par défaut
+
+- Son adresse est intégrée à la compilation depuis des secrets GitHub : elle n'est **jamais dans le code source public**, ni dans les journaux de compilation (GitHub masque les secrets).
+- Dans l'exécutable, elle est brouillée (zlib + XOR avec une clé aléatoire différente à chaque compilation) et n'apparaît pas en clair. C'est de l'obscurcissement : une personne déterminée peut toujours retrouver l'adresse en observant le trafic réseau.
+- L'application ne l'affiche nulle part : état de connexion, paramètres, messages d'erreur (les erreurs réseau, qui contiennent normalement l'IP, sont reformulées).
+- Le certificat du relais est épinglé dans l'exécutable : un faux serveur placé sur le trajet est refusé.
+- Un nouveau certificat de relais ne contient plus le nom « BrickMote », que les moteurs de recherche de serveurs indexent. Le certificat d'un relais déjà installé est conservé tant qu'on ne le supprime pas (voir le README).
+
 ## Wake-on-LAN
 
 - Un paquet magique ne fait qu'allumer la machine : il ne donne **aucun accès**. Une connexion reste soumise à l'acceptation, ou au mot de passe et à la 2FA.

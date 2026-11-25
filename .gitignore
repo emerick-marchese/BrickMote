@@ -12,3 +12,4 @@ packaging/brickmote.icns
 packaging/brickmote.png
 *.pem
 *.sqlite3
+brickmote/_embedded.py
