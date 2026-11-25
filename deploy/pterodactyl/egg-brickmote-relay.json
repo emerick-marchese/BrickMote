@@ -1,0 +1,102 @@
+{
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PTERODACTYL PANEL - PTERODACTYL.IO",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-11-25T10:30:00+00:00",
+    "name": "BrickMote Relay",
+    "author": "relay@brickmote.invalid",
+    "description": "Serveur relais BrickMote (bureau à distance chiffré de bout en bout). Le relais ne voit que du chiffré. Port principal conseillé : TCP 6568. Au démarrage, la console affiche l'empreinte du certificat à saisir dans Paramètres > Réseau de chaque poste BrickMote.",
+    "features": null,
+    "docker_images": {
+        "Python 3.12": "ghcr.io/parkervcp/yolks:python_3.12"
+    },
+    "file_denylist": [],
+    "startup": "cd /home/container/BrickMote && if [ \"{{AUTO_UPDATE}}\" = \"1\" ]; then git pull --ff-only || echo \"Mise à jour impossible, version actuelle conservée\"; fi; pip install --user --quiet --disable-pip-version-check --no-warn-script-location -r requirements-relay.txt && exec python -m brickmote.server --host 0.0.0.0 --ports \"{{SERVER_PORT}},{{EXTRA_PORTS}}\" --data-dir /home/container/relay-data --hostname \"{{BRICKMOTE_HOSTNAME}}\"",
+    "config": {
+        "files": "{}",
+        "startup": "{\"done\": \"listening on\"}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# BrickMote relay - installation (runs in a temporary container, files go to /mnt/server)\nset -e\napt-get update -qq && apt-get install -y -qq git ca-certificates > /dev/null\nmkdir -p /mnt/server\ncd /mnt/server\n\nURL=\"${GIT_ADDRESS}\"\nif [ -n \"${GIT_USERNAME}\" ] && [ -n \"${GIT_ACCESS_TOKEN}\" ]; then\n  URL=\"https://${GIT_USERNAME}:${GIT_ACCESS_TOKEN}@${GIT_ADDRESS#https://}\"\nfi\n\nif [ -d BrickMote/.git ]; then\n  echo \"Mise à jour de BrickMote...\"\n  git -C BrickMote fetch --depth 1 \"$URL\" ${GIT_BRANCH:+\"$GIT_BRANCH\"}\n  git -C BrickMote reset --hard FETCH_HEAD\nelse\n  echo \"Téléchargement de BrickMote...\"\n  rm -rf BrickMote\n  git clone --depth 1 ${GIT_BRANCH:+--branch \"$GIT_BRANCH\"} \"$URL\" BrickMote\nfi\n# never keep an access token on disk\ngit -C BrickMote remote set-url origin \"${GIT_ADDRESS}\"\n\nmkdir -p /mnt/server/relay-data\necho \"Installation terminée : $(git -C BrickMote log -1 --format='%h %s')\"\n",
+            "container": "python:3.12-slim",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Dépôt Git",
+            "description": "Adresse du dépôt BrickMote à installer.",
+            "env_variable": "GIT_ADDRESS",
+            "default_value": "https://github.com/emerick-marchese/BrickMote.git",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:200",
+            "field_type": "text"
+        },
+        {
+            "name": "Branche ou version",
+            "description": "Branche ou tag à installer (ex. v1.0.0). Vide = branche par défaut du dépôt.",
+            "env_variable": "GIT_BRANCH",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:100",
+            "field_type": "text"
+        },
+        {
+            "name": "Mise à jour automatique",
+            "description": "1 = récupérer la dernière version du dépôt à chaque démarrage (git pull). 0 = ne jamais mettre à jour automatiquement.",
+            "env_variable": "AUTO_UPDATE",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|boolean",
+            "field_type": "text"
+        },
+        {
+            "name": "Nom public du serveur",
+            "description": "Nom de domaine ou IP publique du VPS (inscrit dans le certificat TLS du relais).",
+            "env_variable": "BRICKMOTE_HOSTNAME",
+            "default_value": "localhost",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:253|regex:/^[A-Za-z0-9.:-]+$/",
+            "field_type": "text"
+        },
+        {
+            "name": "Ports supplémentaires",
+            "description": "Ports de secours, séparés par des virgules (ex. 443,80). Ils doivent aussi être ajoutés dans les allocations du serveur. Vide = port principal uniquement.",
+            "env_variable": "EXTRA_PORTS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:40|regex:/^[0-9]{1,5}(,[0-9]{1,5})*$/",
+            "field_type": "text"
+        },
+        {
+            "name": "Utilisateur Git (dépôt privé uniquement)",
+            "description": "À remplir seulement si le dépôt devient privé.",
+            "env_variable": "GIT_USERNAME",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:100",
+            "field_type": "text"
+        },
+        {
+            "name": "Jeton d'accès Git (dépôt privé uniquement)",
+            "description": "Jeton GitHub en lecture seule, utilisé seulement pendant l'installation (jamais conservé sur le disque).",
+            "env_variable": "GIT_ACCESS_TOKEN",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": true,
+            "rules": "nullable|string|max:200",
+            "field_type": "text"
+        }
+    ]
+}

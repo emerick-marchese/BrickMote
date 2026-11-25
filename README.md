@@ -163,6 +163,22 @@ python -m brickmote.server --ports 6568,443,80 --hostname relais.mondomaine.fr -
 
 Un service systemd durci est fourni dans `deploy/brickmote-relay.service`. Ouvrez les ports TCP **6568**, **443** et **80** dans le pare-feu du serveur. Si 443 et 80 sont déjà pris, `--ports 6568` suffit.
 
+### Sur un panel Pterodactyl
+
+Un egg prêt à importer est fourni : `deploy/pterodactyl/egg-brickmote-relay.json`.
+
+1. **Importer l'egg** : *Admin > Nests > Import Egg*, choisissez le fichier JSON et un nest (par exemple un nouveau nest « BrickMote »).
+2. **Créer l'allocation** : *Admin > Nodes > votre node > Allocation*, avec l'IP publique du VPS et le port **6568**. Ajoutez 443 et 80 seulement s'ils sont libres (ils ne le sont pas si le panel tourne sur le même VPS).
+3. **Créer le serveur** : *Admin > Servers > Create New*.
+   - Allocation par défaut : `IP:6568`.
+   - Egg : *BrickMote Relay*, image *Python 3.12*.
+   - 256 Mo de RAM, 1 Go de disque et 50 % de CPU suffisent.
+   - Variables : *Nom public du serveur* = votre domaine ou l'IP du VPS. *Ports supplémentaires* = `443,80` uniquement si vous les avez alloués.
+4. **Démarrer** le serveur. La console affiche l'**empreinte du certificat** : copiez-la. Elle ne change plus ensuite, même après un redémarrage.
+5. **Pare-feu** : autorisez le port TCP 6568 en entrée, dans le pare-feu de l'hébergeur du VPS et dans `ufw` s'il est utilisé.
+
+Le relais ne demande qu'environ 50 Mo de RAM. En revanche, toute la bande passante des sessions passe par le VPS (environ 1 à 5 Mbit/s par session). Sauvegardez le dossier `relay-data` du serveur : il contient le certificat (donc l'empreinte) et la liste des ID enregistrés.
+
 ### Configurer les clients
 
 Au démarrage, le serveur affiche une **empreinte SHA-256** de son certificat. Sur chaque poste, dans **Paramètres > Réseau**, renseignez :
