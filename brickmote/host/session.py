@@ -4,19 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Optional
 
 from ..crypto.handshake import HandshakeResult, sanitize_permissions
 from ..session import PeerSession, SessionEvents
-from .capture import QUALITY_PRESETS, FrameEncoder, MSSCapture, pack_frame
+from .capture import QUALITY_PRESETS, AdaptiveQuality, FrameEncoder, MSSCapture, get_profile, pack_frame, scale_for, scaled
 from .inputs import InputInjector
 
 log = logging.getLogger(__name__)
 
-MAX_IN_FLIGHT = 2  # frames sent but not yet acknowledged (latency control)
-MAX_SEND_BUFFER = 4 * 1024 * 1024
+MAX_SEND_BUFFER = 2 * 1024 * 1024
 MAX_PENDING_INPUT = 500
 
 
@@ -33,11 +33,19 @@ class HostSession(PeerSession):
         capture_factory: Callable = MSSCapture,
         injector_factory: Callable = InputInjector,
         wol_info: Optional[dict] = None,
+        direct_info: Optional[dict] = None,
     ):
         super().__init__(result, events, downloads)
         self.wol_info = wol_info
-        self.quality = quality if quality in QUALITY_PRESETS else "balanced"
-        self.fps = max(1, min(60, fps))
+        self.direct_info = direct_info
+        self.profile = get_profile(quality)
+        self.adaptive = AdaptiveQuality(self.profile)
+        self.fps = self.profile.fps
+        self.viewport_width: Optional[int] = None  # viewer window width (physical pixels)
+        self._m = 64  # current scale (m/64)
+        self._sent: dict[int, tuple[float, int]] = {}
+        self._idle_since: Optional[float] = None
+        self._min_q = 100  # lowest JPEG quality used since the last full frame
         self._capture_factory = capture_factory
         self._capture = None
         self._capture_exec = ThreadPoolExecutor(1, thread_name_prefix="bm-capture")
@@ -89,6 +97,7 @@ class HostSession(PeerSession):
         self._input_exec.shutdown(wait=False)
         if self._capture is not None:
             self._capture_exec.submit(self._capture.close)
+        self._capture_exec.submit(self._encoder.close)
         self._capture_exec.shutdown(wait=False)
 
     def _info(self) -> dict:
@@ -97,9 +106,11 @@ class HostSession(PeerSession):
             "monitors": [{"index": m["index"], "width": m["width"], "height": m["height"]} for m in self.monitors],
             "monitor": self.monitor_index,
             "perms": self.permissions,
-            "quality": self.quality,
+            "quality": self.profile.name,
             "fps": self.fps,
         }
+        if self.direct_info:
+            info["direct"] = self.direct_info
         if self.wol_info:
             info["wol"] = {
                 "mac": self.wol_info.get("mac"),
@@ -127,7 +138,8 @@ class HostSession(PeerSession):
         loop = asyncio.get_running_loop()
         frame_id = 0
         while not self.closed:
-            if self._in_flight >= MAX_IN_FLIGHT or self.channel.buffered_bytes() > MAX_SEND_BUFFER:
+            limit = self.profile.in_flight if self.adaptive.level < 3 else 1  # congested: one at a time
+            if self._in_flight >= limit or self.channel.buffered_bytes() > MAX_SEND_BUFFER:
                 self._ack.clear()
                 try:
                     await asyncio.wait_for(self._ack.wait(), 1.0)
@@ -147,27 +159,59 @@ class HostSession(PeerSession):
                 frame_id += 1
                 self._in_flight += 1
                 self.frames_sent += 1
+                self._sent[frame_id] = (loop.time(), len(payload))
+                if len(self._sent) > 64:  # never acknowledged (should not happen over TCP)
+                    for old in sorted(self._sent)[:-32]:
+                        self._sent.pop(old, None)
                 await self.channel.send(payload)
             elapsed = loop.time() - started
-            await asyncio.sleep(max(0.005, 1.0 / self.fps - elapsed))
+            await asyncio.sleep(max(0.002, 1.0 / self.fps - elapsed))
+
+    def _on_ack(self, fid: object) -> None:
+        self._in_flight = max(0, self._in_flight - 1)
+        sent = self._sent.pop(fid, None) if isinstance(fid, int) else None
+        if sent is not None:
+            now = asyncio.get_running_loop().time()
+            self.adaptive.on_ack(now - sent[0], now)
+        self._ack.set()
 
     def _grab_encode(self, frame_id: int) -> Optional[bytes]:
         if self._capture is None:
             self._capture = self._capture_factory()
         width, height, raw = self._capture.grab(self.monitor_index)
-        quality = self.quality
-        frame = self._encoder.prepare(width, height, raw, quality)
-        if self._force_full:
-            self._force_full = False
+        frame = FrameEncoder.as_array(width, height, raw)
+        profile = self.profile
+        quality, level_scale = self.adaptive.current()
+        max_w = profile.max_width if not self.viewport_width else min(profile.max_width, self.viewport_width)
+        m = scale_for(width, max(320, int(max_w * level_scale)))
+        if m != self._m or self._force_full:
+            self._m, self._force_full = m, False
             self._encoder.reset()
         rects = self._encoder.changed_rects(frame)
-        fh, fw = frame.shape[:2]
+        fw, fh = scaled(width, m), scaled(height, m)
         cur = self._cursor_reader.cursor()
         cursor = (min(fw - 1, int(cur[0] * fw)), min(fh - 1, int(cur[1] * fh))) if cur else None
-        if not rects and cursor == self._last_cursor:
-            return None
+        now = time.monotonic()
+        if not rects:
+            if self._idle_since is None:
+                self._idle_since = now
+            elif now - self._idle_since > 1.0 and self._min_q < quality - 5:
+                # the screen is still: resend it once at the (now better) quality
+                self._encoder.reset()
+                rects = self._encoder.changed_rects(frame)
+                self._min_q = 100
+            if not rects and cursor == self._last_cursor:
+                return None
+        else:
+            self._idle_since = None
+        if rects == [(0, 0, width, height)]:
+            self._min_q = quality
+        elif rects:
+            self._min_q = min(self._min_q, quality)
         self._last_cursor = cursor
-        return pack_frame(frame_id, fw, fh, cursor, self._encoder.encode(frame, rects, quality))
+        subsampling = 0 if profile.full_chroma and quality >= 85 else 2
+        encoded = self._encoder.encode(frame, rects, m, quality, subsampling, profile.threads)
+        return pack_frame(frame_id, fw, fh, cursor, encoded)
 
     # ------------------------------------------------------------- control
     def _inject(self, fn, *args) -> None:
@@ -196,8 +240,7 @@ class HostSession(PeerSession):
         if not self._ready.is_set():
             return
         if t == "ack":
-            self._in_flight = max(0, self._in_flight - 1)
-            self._ack.set()
+            self._on_ack(msg.get("fid"))
         elif t in ("mouse", "wheel", "key"):
             if not self.permissions.get("control"):
                 return  # view-only: silently ignore any input
@@ -219,15 +262,21 @@ class HostSession(PeerSession):
             index = msg.get("index")
             if isinstance(index, int) and self._select_monitor(index):
                 await self.send_json(self._info())
-        elif t == "quality":
-            q = msg.get("q")
-            if q in QUALITY_PRESETS:
-                self.quality = q
+        elif t in ("quality", "profile"):
+            name = msg.get("q") if t == "quality" else msg.get("p")
+            if name in QUALITY_PRESETS:
+                self.profile = get_profile(name)
+                self.adaptive.set_profile(self.profile)
+                self.fps = self.profile.fps
                 self._force_full = True
+        elif t == "viewport":
+            w = msg.get("w")
+            if isinstance(w, int) and 320 <= w <= 16384:
+                self.viewport_width = w
         elif t == "fps":
             fps = msg.get("fps")
             if isinstance(fps, int) and 1 <= fps <= 60:
-                self.fps = fps
+                self.fps = min(fps, self.profile.fps)
         elif t == "refresh":
             self._force_full = True
         # unknown messages are ignored (forward compatibility)

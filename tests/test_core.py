@@ -267,3 +267,40 @@ async def test_custom_relay_mode_shows_its_address(tmp_path, relay):
     assert not viewer.relay_masked
     assert any("127.0.0.1" in d for s, d in statuses if s == "online")
     await viewer.stop()
+
+
+async def test_second_connection_goes_direct_instead_of_relay(tmp_path, relay):
+    port, fp = relay
+    conf = {"relay_mode": "custom", "relay_host": "127.0.0.1", "relay_ports": [port], "relay_fingerprint": fp}
+    host, host_ui = make_core(tmp_path, "host", **conf)
+    viewer, _ = make_core(tmp_path, "viewer", direct_enabled=False, **conf)
+    await host.start()
+    await viewer.start()
+    await wait_online(host)
+    await wait_online(viewer)
+
+    events = Recorder()
+    first = await viewer.connect(host.identity.device_id, None, events)
+    assert first.peer.address == "relais"
+    await events.wait_for("info")
+    learned = viewer.known_hosts.entries()[host.identity.device_id].get("direct")
+    assert learned and learned["port"] == host.direct_port and learned["ips"]
+    await first.close()
+
+    second = await viewer.connect(host.identity.device_id, None, Recorder())
+    assert second.peer.address != "relais", "the direct path must be preferred"
+    await second.close()
+    await viewer.stop()
+    await host.stop()
+
+
+async def test_race_connect_keeps_the_first_answer():
+    from brickmote.core import _race_connect
+
+    server = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+    good = server.sockets[0].getsockname()[1]
+    won = await _race_connect([("127.0.0.1", free_port()), ("127.0.0.1", good), ("10.255.255.1", 7070)], 1.0)
+    assert won is not None and won[3] == good
+    won[1].close()
+    assert await _race_connect([("127.0.0.1", free_port())], 0.5) is None
+    server.close()

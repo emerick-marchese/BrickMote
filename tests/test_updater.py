@@ -190,3 +190,28 @@ def test_fetch_latest_keeps_notes():
     payload = {"tag_name": "v9.0.0", "body": "- Nouveauté", "assets": []}
     rel = updater.fetch_latest(lambda url, limit: json.dumps(payload).encode())
     assert rel.notes == "- Nouveauté"
+
+
+def test_service_postpones_when_the_app_is_running(monkeypatch, tmp_path):
+    monkeypatch.setattr(updater, "install_kind", lambda: "windows-installed")
+    monkeypatch.setattr(updater.sys, "executable", str(tmp_path / "BrickMote.exe"))
+    monkeypatch.setattr(updater, "_wait_for_release_check", lambda: Release("9.9.9", "v9.9.9", "x", {}))
+    monkeypatch.setattr(updater, "app_running", lambda: True)
+    called = []
+    monkeypatch.setattr(updater, "download_verified", lambda *a, **k: called.append(a))
+    assert updater.run_update_service() == 0
+    assert called == [], "never close a running BrickMote at boot"
+
+
+def test_service_retries_until_the_network_is_up(monkeypatch):
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise OSError("network down")
+        return None
+
+    monkeypatch.setattr(updater, "check_for_update", flaky)
+    assert updater._wait_for_release_check(attempts=5, delay=0) is None
+    assert len(calls) == 3

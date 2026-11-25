@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QGuiApplication, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
     QComboBox,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..host.capture import PROFILES, get_profile
 from ..host.inputs import COORD_MAX
 from ..util import format_id
 from .bridge import CoreThread, QtSessionEvents
@@ -50,15 +51,32 @@ class RemoteScreen(QWidget):
 
     # ---------------------------------------------------------- painting
     def apply_frame(self, width: int, height: int, cursor, images) -> None:
-        if self.image is None or self.image.width() != width or self.image.height() != height:
+        resized = self.image is None or self.image.width() != width or self.image.height() != height
+        if resized:
             self.image = QImage(width, height, QImage.Format_RGB32)
             self.image.fill(QColor("black"))
         p = QPainter(self.image)
+        dirty = QRect()
         for x, y, img in images:
             p.drawImage(x, y, img)
+            dirty = dirty.united(QRect(x, y, img.width(), img.height()))
         p.end()
+        moved = cursor != self.cursor_pos
         self.cursor_pos = cursor
-        self.update()
+        if resized or moved or self.win.view_only or not self.win.can_control():
+            self.update()  # full repaint (new size, or the remote cursor dot moved)
+        elif not dirty.isEmpty():
+            # repaint only the changed area, mapped to widget coordinates
+            r = self.target_rect()
+            sx, sy = r.width() / width, r.height() / height
+            self.update(
+                QRect(
+                    int(r.x() + dirty.x() * sx) - 2,
+                    int(r.y() + dirty.y() * sy) - 2,
+                    int(dirty.width() * sx) + 5,
+                    int(dirty.height() * sy) + 5,
+                )
+            )
 
     def target_rect(self) -> QRectF:
         if self.image is None:
@@ -182,8 +200,10 @@ class RemoteScreen(QWidget):
 
 
 class ViewerWindow(QMainWindow):
-    def __init__(self, core_thread: CoreThread, target: str, parent=None, on_thumbnail=None):
+    def __init__(self, core_thread: CoreThread, target: str, parent=None, on_thumbnail=None, profile="balanced"):
         super().__init__(parent)
+        self.profile = get_profile(profile)
+        self._viewport_sent = None
         self.on_thumbnail = on_thumbnail  # callable(device_id, QImage): keeps a preview for "Récents"
         self.on_wol_learned = None  # callable(device_id, {"mac", "broadcast"})
         self.wake_action = None  # callable(target) -> callable | None (offer Wake-on-LAN on failure)
@@ -215,6 +235,7 @@ class ViewerWindow(QMainWindow):
         self.status_label = QLabel()
         self.statusBar().addPermanentWidget(self.status_label)
         self._stats = QTimer(self, interval=1000, timeout=self._update_stats)
+        self._viewport_timer = QTimer(self, singleShot=True, interval=400, timeout=self._send_viewport)
 
         sig = self.events.sig
         sig.waiting.connect(self._on_waiting)
@@ -293,13 +314,15 @@ class ViewerWindow(QMainWindow):
         )
         tb.addWidget(self.monitor_box)
         self.quality_box = QComboBox()
-        self.quality_box.setToolTip("Qualité d'image")
-        for key, text in (("low", "Rapide"), ("balanced", "Équilibrée"), ("high", "Haute qualité")):
-            self.quality_box.addItem(text, key)
-        self.quality_box.setCurrentIndex(1)
-        self.quality_box.activated.connect(
-            lambda i: self.send(lambda s, q=self.quality_box.itemData(i): s.set_quality(q))
+        self.quality_box.setToolTip(
+            "Profil de performance : plus il est élevé, plus l'image est fluide et nette,\n"
+            "mais plus il consomme de débit et de processeur (des deux côtés).\n"
+            "La qualité s'adapte aussi automatiquement à la connexion."
         )
+        for profile in PROFILES.values():
+            self.quality_box.addItem(profile.label, profile.name)
+        self.quality_box.setCurrentIndex(max(0, self.quality_box.findData(self.profile.name)))
+        self.quality_box.activated.connect(lambda i: self._set_profile(self.quality_box.itemData(i)))
         tb.addWidget(self.quality_box)
         tb.addSeparator()
         self.act_view_only = action("eye", "Lecture seule (ne pas envoyer la souris ni le clavier)", self._toggle_view_only, True)
@@ -378,6 +401,8 @@ class ViewerWindow(QMainWindow):
         self.stack.setCurrentWidget(self.screen)
         self.screen.setFocus()
         self.sas_label.setText(f" Code de sécurité  {session.sas} ")
+        self._set_profile(self.profile.name)
+        self._send_viewport()
         self._stats.start()
         self._on_permissions(session, session.permissions)
 
@@ -393,9 +418,7 @@ class ViewerWindow(QMainWindow):
         idx = self.monitor_box.findData(info.get("monitor"))
         if idx >= 0:
             self.monitor_box.setCurrentIndex(idx)
-        q = self.quality_box.findData(info.get("quality"))
-        if q >= 0:
-            self.quality_box.setCurrentIndex(q)
+        # the performance profile is chosen here, not by the host
 
     def _on_frame(self, session, width, height, cursor, images):
         self._frames += 1
@@ -442,6 +465,30 @@ class ViewerWindow(QMainWindow):
             self.close()
 
     # ---------------------------------------------------------- actions
+    def _set_profile(self, name: str):
+        self.profile = get_profile(name)
+        self.screen._move_timer.setInterval(self.profile.mouse_ms)
+        self.send(lambda s, n=self.profile.name: s.set_quality(n))
+
+    def _send_viewport(self):
+        """Tell the host how wide the image is displayed, so that it never
+        sends more pixels than useful (less bandwidth, less latency)."""
+        if self.session is None:
+            return
+        if self.fit_to_window:
+            width = int(self.screen.width() * self.screen.devicePixelRatioF())
+            width = max(320, (width + 63) // 64 * 64)
+        else:
+            width = 16384  # 1:1 display: full resolution
+        if width != self._viewport_sent:
+            self._viewport_sent = width
+            self.send(lambda s, w=width: s.set_viewport(w))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_viewport_timer"):
+            self._viewport_timer.start()
+
     def _toggle_view_only(self, on: bool):
         self.view_only = on
         if self.session:
@@ -452,6 +499,7 @@ class ViewerWindow(QMainWindow):
     def _toggle_fit(self, on: bool):
         self.fit_to_window = on
         self.screen.update()
+        self._send_viewport()
 
     def _toggle_fullscreen(self):
         self.showNormal() if self.isFullScreen() else self.showFullScreen()

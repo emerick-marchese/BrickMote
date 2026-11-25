@@ -19,6 +19,7 @@ class ViewerSession(PeerSession):
         self.info: dict = {}
         self.frames_received = 0
         self.view_only = False
+        self.direct_hook = None  # set by the core: remembers how to reach the host directly
 
     async def start(self) -> None:
         await self.send_json({"t": "ready", "v": 1})
@@ -44,6 +45,12 @@ class ViewerSession(PeerSession):
                 "wol": sanitize_wol(msg.get("wol")),
             }
             self.permissions = sanitize_permissions(msg.get("perms"))
+            direct = _sanitize_direct(msg.get("direct"))
+            if direct and self.direct_hook is not None:
+                try:
+                    self.direct_hook(direct)
+                except Exception:  # noqa: BLE001 - best effort
+                    pass
             self.events.on_info(self, dict(self.info))
             self.events.on_permissions(self, dict(self.permissions))
         elif t == "perm":
@@ -86,6 +93,11 @@ class ViewerSession(PeerSession):
     async def set_quality(self, quality: str) -> None:
         await self.send_json({"t": "quality", "q": quality})
 
+    async def set_viewport(self, width: int) -> None:
+        """Width (physical pixels) at which the remote screen is displayed: the
+        host does not send more pixels than that."""
+        await self.send_json({"t": "viewport", "w": max(320, min(16384, int(width)))})
+
     async def set_fps(self, fps: int) -> None:
         await self.send_json({"t": "fps", "fps": int(fps)})
 
@@ -95,3 +107,29 @@ class ViewerSession(PeerSession):
 
 def _clamp(v) -> int:
     return max(0, min(COORD_MAX, int(v)))
+
+
+def _sanitize_direct(value: object):
+    """Direct addresses announced by the host (untrusted input)."""
+    import ipaddress
+
+    if not isinstance(value, dict) or not isinstance(value.get("port"), int) or not 0 < value["port"] < 65536:
+        return None
+    ips = []
+    for ip in value.get("ips") or []:
+        try:
+            addr = ipaddress.IPv4Address(ip)
+        except (ValueError, TypeError):
+            continue
+        if not (addr.is_loopback or addr.is_multicast or addr.is_unspecified) and str(addr) not in ips:
+            ips.append(str(addr))
+    public = ""
+    try:
+        pub = ipaddress.IPv4Address(value.get("public") or "")
+        if pub.is_global:
+            public = str(pub)
+    except ValueError:
+        pass
+    if not ips and not public:
+        return None
+    return {"port": value["port"], "ips": ips[:8], "public": public}

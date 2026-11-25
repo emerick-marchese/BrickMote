@@ -797,13 +797,23 @@ class SettingsDialog(QDialog):
         self.name = QLineEdit(self.s.device_name)
         self.name.setMaxLength(64)
         form.addRow("Nom de ce poste", self.name)
+        from ..host.capture import PROFILES
+
         self.quality = QComboBox()
-        for key, text in (("low", "Faible bande passante"), ("balanced", "Équilibrée"), ("high", "Haute qualité")):
-            self.quality.addItem(text, key)
+        for profile in PROFILES.values():
+            self.quality.addItem(f"{profile.label}  ({profile.fps} images/s max)", profile.name)
         self.quality.setCurrentIndex(max(0, self.quality.findData(self.s.quality)))
-        form.addRow("Qualité d'image envoyée", self.quality)
+        form.addRow("Performance", self.quality)
+        form.addRow("", _label(
+            "Profil utilisé à chaque connexion (modifiable pendant la session). Plus il est élevé, "
+            "plus l'image est fluide et nette, mais plus il consomme de débit Internet et de "
+            "processeur sur les deux ordinateurs. La qualité s'ajuste aussi automatiquement "
+            "à la vitesse de la connexion.",
+            "Small",
+            True,
+        ))
         self.fps = QSpinBox(minimum=1, maximum=60, value=self.s.fps, suffix=" images/s")
-        form.addRow("Fréquence maximale", self.fps)
+        self.fps.setVisible(False)  # replaced by the profiles (kept for old settings files)
         self.theme = QComboBox()
         self.theme.addItem("Sombre", "dark")
         self.theme.addItem("Clair", "light")

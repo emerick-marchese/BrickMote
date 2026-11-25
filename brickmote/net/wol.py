@@ -216,6 +216,27 @@ def send_magic_packet(
     return sent
 
 
+def local_ipv4s() -> list[str]:
+    """This computer's IPv4 addresses on real networks (loopback and link-local
+    excluded), the one used to reach the Internet first."""
+    out = []
+    primary = _primary_ipv4()
+    if primary:
+        out.append(primary)
+    try:
+        import psutil
+
+        for addrs in psutil.net_if_addrs().values():
+            for a in addrs:
+                if a.family == socket.AF_INET and a.address not in out:
+                    ip = ipaddress.IPv4Address(a.address)
+                    if not (ip.is_loopback or ip.is_link_local):
+                        out.append(a.address)
+    except (ImportError, ValueError):
+        pass
+    return out[:8]
+
+
 def _primary_ipv4() -> Optional[str]:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:

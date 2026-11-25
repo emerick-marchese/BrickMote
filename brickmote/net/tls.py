@@ -16,6 +16,7 @@ import ssl
 from pathlib import Path
 
 from ..util import secure_write
+from .framing import tune_socket
 
 
 def normalize_fingerprint(fp: str) -> str:
@@ -57,6 +58,7 @@ async def open_tls(host: str, port: int, fingerprint: str = "", timeout: float =
     reader, writer = await asyncio.wait_for(
         asyncio.open_connection(host, port, ssl=ctx, server_hostname=host), timeout
     )
+    tune_socket(writer)
     if pin:
         sslobj = writer.get_extra_info("ssl_object")
         der = sslobj.getpeercert(binary_form=True) if sslobj else None

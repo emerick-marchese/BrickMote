@@ -265,6 +265,43 @@ def launch_installer_elevated(path: Path) -> None:
         raise UpdateError("installation annulée")
 
 
+def app_running() -> bool:
+    """Is a BrickMote window/tray instance running (other than this process)?"""
+    try:
+        import psutil
+    except ImportError:
+        return False
+    me = os.getpid()
+    exe = os.path.normcase(os.path.realpath(sys.executable))
+    for proc in psutil.process_iter(["pid", "exe", "cmdline"]):
+        try:
+            if proc.info["pid"] == me or not proc.info["exe"]:
+                continue
+            if os.path.normcase(os.path.realpath(proc.info["exe"])) != exe:
+                continue
+            if "--update-service" in (proc.info["cmdline"] or []):
+                continue
+            return True
+        except (psutil.Error, OSError):
+            continue
+    return False
+
+
+def _wait_for_release_check(attempts: int = 12, delay: float = 15.0) -> Optional[Release]:
+    """At boot the network may not be up yet: retry for a few minutes."""
+    import time as _time
+
+    for i in range(attempts):
+        try:
+            return check_for_update()
+        except (OSError, UpdateError, ValueError) as exc:
+            if i == attempts - 1:
+                raise
+            log.info("réseau pas encore prêt (%s), nouvel essai", exc.__class__.__name__)
+            _time.sleep(delay)
+    return None
+
+
 def run_update_service() -> int:
     """Entry point of the SYSTEM scheduled task (``--update-service``)."""
     if install_kind() != "windows-installed":
@@ -280,9 +317,15 @@ def run_update_service() -> int:
     try:
         for old in updates.glob("BrickMote-Setup-*.exe"):
             old.unlink(missing_ok=True)
-        release = check_for_update()
+        release = _wait_for_release_check()
         if release is None:
             log.info("BrickMote %s est à jour", __version__)
+            return 0
+        if app_running():
+            # Installing now would close BrickMote without restarting it, leaving
+            # this computer unreachable: retry at the next boot instead (the
+            # "Installer maintenant" banner is offered in the application).
+            log.info("BrickMote est déjà ouvert : mise à jour %s reportée", release.version)
             return 0
         name = asset_name(release.version, "windows-installed")
         installer = download_verified(release, name, updates)

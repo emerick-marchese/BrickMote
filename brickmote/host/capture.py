@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import struct
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Optional, Protocol
 
 import numpy as np
@@ -11,12 +13,95 @@ from PIL import Image
 
 TILE = 64
 
-# name -> (max frame width, JPEG quality, chroma subsampling 0=4:4:4 2=4:2:0)
-QUALITY_PRESETS = {
-    "low": (1280, 45, 2),
-    "balanced": (1920, 70, 2),
-    "high": (3840, 88, 0),
+
+@dataclass(frozen=True)
+class Profile:
+    """Performance profile chosen by the viewer. Higher = smoother and sharper,
+    but more bandwidth and CPU on both computers."""
+
+    name: str
+    label: str
+    fps: int
+    max_width: int  # widest frame sent (before adaptive reduction)
+    q_max: int  # JPEG quality when the link is good
+    q_min: int  # lowest JPEG quality the adaptive control may use
+    in_flight: int  # frames sent but not yet acknowledged
+    target_ms: int  # acknowledgement delay the adaptive control aims for
+    threads: int  # parallel encoders
+    full_chroma: bool  # 4:4:4 colours (sharper text) at high quality
+    mouse_ms: int  # viewer: mouse move sending interval
+
+
+PROFILES = {
+    "eco": Profile("eco", "Économie", 12, 1280, 55, 30, 1, 350, 1, False, 30),
+    "balanced": Profile("balanced", "Équilibré", 24, 1920, 70, 35, 2, 220, 2, False, 15),
+    "performance": Profile("performance", "Performance", 40, 2560, 80, 40, 2, 150, 4, False, 8),
+    "max": Profile("max", "Maximum", 60, 3840, 90, 50, 3, 120, 4, True, 8),
 }
+_ALIASES = {"low": "eco", "high": "max"}  # names used by BrickMote <= 1.0.4
+QUALITY_PRESETS = set(PROFILES) | set(_ALIASES)
+
+
+def get_profile(name: object) -> Profile:
+    name = _ALIASES.get(name, name)
+    return PROFILES.get(name, PROFILES["balanced"])
+
+
+# Scale factors are multiples of 1/64 so that every 64-pixel tile boundary of
+# the screen falls on a whole pixel of the scaled frame: changed tiles can be
+# scaled independently and still join without seams.
+SCALE_STEPS = (64, 56, 48, 40, 32, 24, 16)
+
+
+def scale_for(width: int, max_width: int) -> int:
+    for m in SCALE_STEPS:
+        if width * m / 64 <= max_width:
+            return m
+    return SCALE_STEPS[-1]
+
+
+def scaled(v: int, m: int) -> int:
+    return (v * m + 32) // 64
+
+
+class AdaptiveQuality:
+    """Adjusts JPEG quality, then resolution, to the measured acknowledgement
+    delay: on a slow link frames get lighter instead of piling up (which is
+    what makes remote control feel laggy)."""
+
+    def __init__(self, profile: Profile):
+        self.set_profile(profile)
+
+    def set_profile(self, profile: Profile) -> None:
+        self.profile = profile
+        hi, lo = profile.q_max, profile.q_min
+        mid = (hi + lo) // 2
+        self.levels = [(hi, 1.0), (mid, 1.0), (lo, 1.0), (mid, 0.75), (lo, 0.75), (lo, 0.5)]
+        self.level = 0
+        self.ewma: Optional[float] = None
+        self.good = 0
+        self.last_change = 0.0
+
+    def current(self) -> tuple[int, float]:
+        return self.levels[self.level]
+
+    def on_ack(self, delay: float, now: float) -> None:
+        self.ewma = delay if self.ewma is None else 0.7 * self.ewma + 0.3 * delay
+        target = self.profile.target_ms / 1000
+        if self.ewma > target * 1.5:
+            self.good = 0
+            if self.level < len(self.levels) - 1 and now - self.last_change > 0.5:
+                self.level += 1
+                self.last_change = now
+        elif self.ewma < target * 0.7:
+            self.good += 1
+            if self.good >= 15 and self.level > 0 and now - self.last_change > 2.0:
+                self.level -= 1
+                self.last_change = now
+                self.good = 0
+        else:
+            self.good = 0
+
 
 FRAME_HEADER = struct.Struct(">BIHHHHH")  # type, frame id, w, h, cursor x, cursor y, n rects
 RECT_HEADER = struct.Struct(">HHHHBI")  # x, y, w, h, format, length
@@ -82,33 +167,32 @@ class MSSCapture:
             self._sct = None
 
 
-def target_size(width: int, height: int, quality: str) -> tuple[int, int]:
-    max_w = QUALITY_PRESETS.get(quality, QUALITY_PRESETS["balanced"])[0]
-    if width <= max_w:
-        return width, height
-    ratio = max_w / width
-    return max_w, max(1, int(round(height * ratio)))
-
-
 class FrameEncoder:
-    """Keeps the previous frame and emits only the changed regions."""
+    """Keeps the previous frame and emits only the changed regions.
+
+    Changes are detected on the full-resolution capture (cheap), and only the
+    changed tiles are scaled down and JPEG-encoded, in parallel for large
+    areas. Scaling a whole 1440p/4K screen on every frame cost 50-120 ms.
+    """
 
     def __init__(self, tile: int = TILE, full_ratio: float = 0.45, max_rects: int = 48):
         self.tile = tile
         self.full_ratio = full_ratio
         self.max_rects = max_rects
         self._prev: Optional[np.ndarray] = None
+        self._pool: Optional[ThreadPoolExecutor] = None
 
     def reset(self) -> None:
         self._prev = None
 
-    def prepare(self, width: int, height: int, raw: bytes, quality: str) -> np.ndarray:
-        """Return an (H, W, 4) BGRA array, scaled down according to ``quality``."""
-        tw, th = target_size(width, height, quality)
-        if (tw, th) == (width, height):
-            return np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 4)
-        img = Image.frombuffer("RGBA", (width, height), raw, "raw", "RGBA", 0, 1)
-        return np.asarray(img.resize((tw, th), Image.BILINEAR))
+    def close(self) -> None:
+        if self._pool is not None:
+            self._pool.shutdown(wait=False)
+            self._pool = None
+
+    @staticmethod
+    def as_array(width: int, height: int, raw: bytes) -> np.ndarray:
+        return np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 4)
 
     def changed_rects(self, frame: np.ndarray) -> list[tuple[int, int, int, int]]:
         h, w = frame.shape[:2]
@@ -116,18 +200,19 @@ class FrameEncoder:
         self._prev = frame
         if prev is None or prev.shape != frame.shape:
             return [(0, 0, w, h)]
-        cur32 = np.ascontiguousarray(frame).view(np.uint32).reshape(h, w)
-        prev32 = np.ascontiguousarray(prev).view(np.uint32).reshape(h, w)
-        diff = cur32 != prev32
+        diff = frame.view(np.uint32).reshape(h, w) != prev.view(np.uint32).reshape(h, w)
         t = self.tile
-        rows, cols = -(-h // t), -(-w // t)
-        padded = np.zeros((rows * t, cols * t), dtype=bool)
-        padded[:h, :w] = diff
-        tiles = padded.reshape(rows, t, cols, t).any(axis=(1, 3))
+        full_r, full_c = h // t, w // t
+        rows = diff[: full_r * t].reshape(full_r, t, w).any(axis=1)
+        if h % t:
+            rows = np.vstack([rows, diff[full_r * t :].any(axis=0, keepdims=True)])
+        tiles = rows[:, : full_c * t].reshape(rows.shape[0], full_c, t).any(axis=2)
+        if w % t:
+            tiles = np.hstack([tiles, rows[:, full_c * t :].any(axis=1, keepdims=True)])
         count = int(tiles.sum())
         if count == 0:
             return []
-        if count >= self.full_ratio * rows * cols:
+        if count >= self.full_ratio * tiles.size:
             return [(0, 0, w, h)]
         rects = _merge_tiles(tiles)
         if len(rects) > self.max_rects:
@@ -138,16 +223,38 @@ class FrameEncoder:
             out.append((x, y, min(c1 * t, w) - x, min(r1 * t, h) - y))
         return out
 
-    def encode(self, frame: np.ndarray, rects, quality: str) -> list[tuple[int, int, int, int, bytes]]:
-        _, q, subsampling = QUALITY_PRESETS.get(quality, QUALITY_PRESETS["balanced"])
-        out = []
+    def _jobs(self, rects, threads: int):
+        """Split large regions into tile-aligned horizontal strips for parallel encoding."""
+        jobs = []
         for x, y, w, h in rects:
+            n = threads if threads > 1 and w * h >= 400_000 else 1
+            step = max(self.tile, -(-h // n // self.tile) * self.tile)
+            for sy in range(y, y + h, step):
+                jobs.append((x, sy, w, min(step, y + h - sy)))
+        return jobs
+
+    def encode(self, frame: np.ndarray, rects, m: int, quality: int, subsampling: int, threads: int = 1):
+        """Encode source ``rects`` of ``frame`` scaled by m/64. Returns rects in
+        scaled coordinates: (x, y, w, h, jpeg)."""
+        jobs = self._jobs(rects, threads)
+
+        def run(job):
+            x, y, w, h = job
             sub = np.ascontiguousarray(frame[y : y + h, x : x + w])
             img = Image.frombuffer("RGB", (w, h), sub.tobytes(), "raw", "BGRX", 0, 1)
+            dx, dy = scaled(x, m), scaled(y, m)
+            dw, dh = max(1, scaled(x + w, m) - dx), max(1, scaled(y + h, m) - dy)
+            if m != 64:
+                img = img.resize((dw, dh), Image.BOX)
             buf = io.BytesIO()
-            img.save(buf, "JPEG", quality=q, subsampling=subsampling, optimize=False)
-            out.append((x, y, w, h, buf.getvalue()))
-        return out
+            img.save(buf, "JPEG", quality=quality, subsampling=subsampling, optimize=False)
+            return dx, dy, dw, dh, buf.getvalue()
+
+        if len(jobs) > 1 and threads > 1:
+            if self._pool is None:
+                self._pool = ThreadPoolExecutor(4, thread_name_prefix="bm-jpeg")
+            return list(self._pool.map(run, jobs))
+        return [run(j) for j in jobs]
 
 
 def _merge_tiles(tiles: np.ndarray) -> list[tuple[int, int, int, int]]:

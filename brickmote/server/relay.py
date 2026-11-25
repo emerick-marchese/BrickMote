@@ -27,7 +27,7 @@ from typing import Optional
 
 from ..constants import MAX_CONTROL_FRAME, RELAY_PORTS
 from ..crypto.identity import id_from_public, verify_signature
-from ..net.framing import FrameError, close_writer, read_json, write_json
+from ..net.framing import FrameError, close_writer, read_json, tune_socket, write_json
 from ..net.tls import file_fingerprint, generate_self_signed, server_context
 from ..util import RateLimiter, b64d, b64e
 
@@ -148,6 +148,7 @@ class RelayServer:
 
     # ----------------------------------------------------------- dispatch
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        tune_socket(writer)
         peer = writer.get_extra_info("peername")
         ip = peer[0] if peer else "?"
         if self.connections >= self.max_connections or not self.ip_limiter.allow(ip):

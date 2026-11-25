@@ -65,7 +65,7 @@ class Settings:
     acl: list = field(default_factory=list)  # [{"id": "...", "note": "..."}]
     blocked: list = field(default_factory=list)  # list of IDs
     # Display
-    quality: str = "balanced"  # low | balanced | high
+    quality: str = "balanced"  # performance profile: eco | balanced | performance | max
     fps: int = 20
     theme: str = "dark"  # dark | light
     check_updates: bool = True  # look for a new version at start-up
@@ -104,7 +104,8 @@ class Settings:
         )
         if not isinstance(self.direct_port, int) or not 0 < self.direct_port < 65536:
             self.direct_port = DIRECT_PORT
-        if self.quality not in ("low", "balanced", "high"):
+        self.quality = {"low": "eco", "high": "max"}.get(self.quality, self.quality)
+        if self.quality not in ("eco", "balanced", "performance", "max"):
             self.quality = "balanced"
         if self.relay_mode not in ("default", "custom", "off"):
             self.relay_mode = "default"

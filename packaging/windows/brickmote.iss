@@ -66,7 +66,7 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""B
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""BrickMote (UDP 50001)"" dir=in action=allow program=""{app}\BrickMote.exe"" protocol=UDP localport=50001 profile=private"; Flags: runhidden; Tasks: firewall
 ; Automatic updates: a SYSTEM task checks for a signed new version at every boot
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""BrickMote\Update"""; Flags: runhidden; Check: not WizardIsTaskSelected('autoupdate')
-Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /RU SYSTEM /RL HIGHEST /SC ONSTART /DELAY 0002:00 /TN ""BrickMote\Update"" /TR ""\""{app}\BrickMote.exe\"" --update-service"""; Flags: runhidden; Tasks: autoupdate
+Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /RU SYSTEM /RL HIGHEST /SC ONSTART /DELAY 0000:20 /TN ""BrickMote\Update"" /TR ""\""{app}\BrickMote.exe\"" --update-service"""; Flags: runhidden; Tasks: autoupdate
 Filename: "{app}\BrickMote.exe"; Description: "{cm:LaunchProgram,BrickMote}"; Flags: nowait postinstall skipifsilent
 ; After an update started from the application ("Installer maintenant"): restart it
 Filename: "{app}\BrickMote.exe"; Flags: nowait runasoriginaluser; Check: RelaunchRequested

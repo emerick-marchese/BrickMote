@@ -934,6 +934,7 @@ class MainWindow(QMainWindow):
             self.core_thread,
             format_id(target) if target.replace(" ", "").isdigit() else target,
             on_thumbnail=self.save_thumbnail,
+            profile=self.core.settings.quality,
         )
         win.on_wol_learned = self.learn_wol
         win.wake_action = self.wake_action_for

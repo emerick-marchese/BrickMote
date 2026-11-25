@@ -1,6 +1,7 @@
 import asyncio
 import io
 import os
+import sys
 
 import numpy as np
 from PIL import Image
@@ -239,7 +240,7 @@ def test_encoder_only_sends_changes():
     b = a.copy()
     b[20, 40] = 255
     assert enc.changed_rects(b) == [(32, 16, 16, 16)]
-    rects = enc.encode(b, [(32, 16, 16, 16)], "balanced")
+    rects = enc.encode(b, [(32, 16, 16, 16)], 64, 70, 2)
     packed = pack_frame(5, 64, 64, None, rects)
     fid, fw, fh, cursor, parsed = unpack_frame(packed)
     assert (fid, fw, fh, cursor) == (5, 64, 64, None)
@@ -258,3 +259,68 @@ def test_unpack_rejects_out_of_bounds_rect():
         pass
     else:
         raise AssertionError("out of bounds rect accepted")
+
+
+def test_scaled_tiles_join_without_gaps():
+    from brickmote.host.capture import scale_for, scaled
+
+    enc = FrameEncoder()
+    w, h = 2560, 1440
+    frame = np.zeros((h, w, 4), dtype=np.uint8)
+    m = scale_for(w, 1920)
+    assert m == 48 and (scaled(w, m), scaled(h, m)) == (1920, 1080)
+    tiles = [(x, y, 64, 64) for x in range(0, 256, 64) for y in range(0, 128, 64)]
+    out = enc.encode(frame, tiles, m, 70, 2)
+    covered = set()
+    for x, y, cw, ch, data in out:
+        assert (cw, ch) == (48, 48)
+        for px in range(x, x + cw):
+            for py in range(y, y + ch):
+                assert (px, py) not in covered, "overlap"
+                covered.add((px, py))
+    assert len(covered) == 192 * 96, "gap between scaled tiles"
+
+
+def test_large_regions_are_encoded_in_parallel_strips():
+    enc = FrameEncoder()
+    frame = np.full((1080, 1920, 4), 128, dtype=np.uint8)
+    out = enc.encode(frame, [(0, 0, 1920, 1080)], 64, 70, 2, threads=4)
+    assert len(out) == 4
+    assert sum(r[3] for r in out) == 1080 and all(r[2] == 1920 for r in out)
+    enc.close()
+
+
+def test_adaptive_quality_follows_the_link():
+    from brickmote.host.capture import AdaptiveQuality, get_profile
+
+    a = AdaptiveQuality(get_profile("performance"))
+    q0, s0 = a.current()
+    t = 0.0
+    for _ in range(20):  # slow link: 600 ms per frame
+        t += 0.6
+        a.on_ack(0.6, t)
+    q1, s1 = a.current()
+    assert q1 < q0 and s1 < s0, "lighter frames on a slow link"
+    for _ in range(200):  # fast link again
+        t += 0.05
+        a.on_ack(0.02, t)
+    assert a.current() == (q0, s0), "back to full quality"
+    assert get_profile("low").name == "eco" and get_profile("high").name == "max"
+    assert get_profile("???").name == "balanced"
+
+
+async def test_viewport_limits_the_frame_size(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "W", 1280)
+    monkeypatch.setattr(sys.modules[__name__], "H", 800)
+    host, viewer, hrec, vrec, tasks = await make_sessions(tmp_path)
+    await vrec.wait_for("info")
+    await viewer.set_viewport(640)  # small window: the host must not send 1280 px
+    await viewer.refresh()
+    for _ in range(20):
+        frame = await vrec.wait_for("frame")
+        if frame[2] < 1280:
+            break
+    assert (frame[2], frame[3]) == (640, 400)
+    await viewer.set_quality("max")
+    await viewer.close()
+    await asyncio.gather(*tasks, return_exceptions=True)

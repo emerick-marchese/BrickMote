@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import struct
 
 _LEN = struct.Struct(">I")
@@ -57,6 +58,19 @@ async def read_json(reader: asyncio.StreamReader, max_size: int) -> dict:
 async def write_json(writer: asyncio.StreamWriter, obj: dict) -> None:
     write_frame(writer, encode_json(obj))
     await writer.drain()
+
+
+def tune_socket(writer: asyncio.StreamWriter) -> None:
+    """Low latency: disable Nagle's algorithm (it delays small packets such as
+    mouse moves and key presses by up to 200 ms) and enable TCP keep-alive."""
+    sock = writer.get_extra_info("socket")
+    if sock is None:
+        return
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except (OSError, AttributeError):
+        pass
 
 
 async def close_writer(writer: asyncio.StreamWriter | None) -> None:

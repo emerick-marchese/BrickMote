@@ -21,7 +21,7 @@ from .crypto.identity import Identity
 from .host.authority import HostPolicy
 from .host.session import HostSession
 from .net.discovery import Discovery
-from .net.framing import close_writer
+from .net.framing import close_writer, tune_socket
 from .defaults import DISPLAY_NAME, builtin_relay
 from .net.relay_client import RelayClient, RelayError
 from .net.wol import local_wol_info
@@ -191,6 +191,7 @@ class BrickMoteCore:
 
     # ---------------------------------------------------------- host side
     async def _on_direct(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        tune_socket(writer)
         peer = writer.get_extra_info("peername")
         ip = peer[0] if peer else "?"
         if not self._ip_limiter.allow(ip):
@@ -228,6 +229,11 @@ class BrickMoteCore:
             if wol is not None:
                 wol["box"] = self.settings.wol_box_address.strip() or (self.public_ip or "")
                 wol["port"] = self.settings.wol_box_port
+        direct = None
+        if self._direct_port:
+            from .net.wol import local_ipv4s
+
+            direct = {"port": self._direct_port, "ips": await asyncio.to_thread(local_ipv4s), "public": self.public_ip or ""}
         session = HostSession(
             result,
             self.ui.host_events,
@@ -235,6 +241,7 @@ class BrickMoteCore:
             quality=self.settings.quality,
             fps=self.settings.fps,
             wol_info=wol,
+            direct_info=direct,
         )
         self.host_sessions.add(session)
         self.audit.write("session_start", peer=result.peer.device_id, ip=address, method=result.method)
@@ -258,25 +265,23 @@ class BrickMoteCore:
                 raise ConnectError("Adresse invalide. Saisissez un ID à 9 chiffres ou une adresse IP[:port].")
             host, port = parsed
             reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), 8)
+            tune_socket(writer)
             yield reader, writer, None, None, f"{host}:{port}"
             return
         if device_id == self.identity.device_id:
             raise ConnectError("Vous ne pouvez pas vous connecter à vous-même.")
-        tried = set()
-        lan = self._discovery.lookup(device_id) if self._discovery else None
-        known = self.known_hosts.entries().get(device_id, {})
-        candidates = [lan] if lan else []
-        addr = known.get("address") if isinstance(known, dict) else None
-        if isinstance(addr, str) and parse_address(addr):
-            candidates.append(parse_address(addr))
-        for host, port in candidates:
-            if (host, port) in tried:
-                continue
-            tried.add((host, port))
-            try:
-                reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), 3)
-            except (OSError, asyncio.TimeoutError):
-                continue
+        # Direct paths first (much lower latency than going through the relay):
+        # LAN discovery, last direct address, and the addresses the host told
+        # us about (LAN IPs, public IP if its box forwards the direct port).
+        # They are all tried at once; the identity check of the handshake
+        # protects against an address that now belongs to someone else.
+        candidates = self._direct_candidates(device_id)
+        while candidates:
+            won = await _race_connect(candidates, timeout=1.5)
+            if won is None:
+                break
+            reader, writer, host, port = won
+            candidates = [c for c in candidates if c != (host, port)]
             yield reader, writer, device_id, None, f"{host}:{port}"
         if self._relay is None:
             raise ConnectError(
@@ -290,6 +295,38 @@ class BrickMoteCore:
         except (OSError, asyncio.TimeoutError) as exc:
             raise ConnectError(f"Serveur relais {self._relay.describe(exc)}") from exc
         yield reader, writer, device_id, pub, "relais"
+
+    def _direct_candidates(self, device_id: str) -> list[tuple[str, int]]:
+        out: list[tuple[str, int]] = []
+
+        def add(host, port):
+            if isinstance(host, str) and host and isinstance(port, int) and 0 < port < 65536:
+                if (host, port) not in out:
+                    out.append((host, port))
+
+        lan = self._discovery.lookup(device_id) if self._discovery else None
+        if lan:
+            add(*lan)
+        known = self.known_hosts.entries().get(device_id, {})
+        if isinstance(known, dict):
+            addr = parse_address(known.get("address") or "") if known.get("address") else None
+            if addr:
+                add(*addr)
+            direct = known.get("direct") if isinstance(known.get("direct"), dict) else {}
+            port = direct.get("port")
+            for ip in (direct.get("ips") or [])[:8]:
+                add(ip, port)
+            if direct.get("public"):
+                add(direct.get("public"), port)
+        return out[:12]
+
+    def learn_direct(self, device_id: str, info: Optional[dict]) -> None:
+        """A connected host told us how to reach it directly."""
+        if not info or not self.known_hosts.get(device_id):
+            return
+        current = self.known_hosts.entries().get(device_id, {}).get("direct")
+        if current != info:
+            self.known_hosts._update(device_id, direct=info)
 
     async def connect(
         self,
@@ -383,7 +420,7 @@ class BrickMoteCore:
                 )
             except HandshakeError as exc:
                 await close_writer(writer)
-                if exc.code in ("protocol", "timeout") and expected_id and address != "relais":
+                if exc.code in ("protocol", "timeout", "id_mismatch", "cancelled") and expected_id and address != "relais":
                     last_error = exc  # stale LAN entry: try next route
                     continue
                 raise
@@ -394,6 +431,7 @@ class BrickMoteCore:
             direct_addr = address if address != "relais" else None
             self.known_hosts.remember(result.peer.device_id, result.peer.public_key, result.peer.name, direct_addr)
             session = ViewerSession(result, events, downloads_dir())
+            session.direct_hook = lambda info, dev=result.peer.device_id: self.learn_direct(dev, info)
             self.viewer_sessions.add(session)
 
             async def runner(s=session):
@@ -405,3 +443,32 @@ class BrickMoteCore:
             asyncio.get_running_loop().create_task(runner())
             return session, result
         raise ConnectError(f"Connexion impossible : {last_error}" if last_error else "Connexion impossible.")
+
+
+async def _race_connect(candidates: list[tuple[str, int]], timeout: float):
+    """Open TCP connections to all candidates at once; keep the first that
+    answers and close the others. Returns (reader, writer, host, port) or None."""
+
+    async def one(host: str, port: int):
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
+        tune_socket(writer)
+        return reader, writer, host, port
+
+    tasks = [asyncio.ensure_future(one(h, p)) for h, p in candidates]
+    winner = None
+    try:
+        for fut in asyncio.as_completed(tasks):
+            try:
+                winner = await fut
+                break
+            except (OSError, asyncio.TimeoutError, ValueError):
+                continue
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, tuple) and r is not winner and (winner is None or r[1] is not winner[1]):
+                await close_writer(r[1])
+    return winner
