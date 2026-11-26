@@ -473,13 +473,14 @@ class MainWindow(QMainWindow):
 
     def _show(self):
         if self.isHidden() or self.isMinimized():
+            self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowMaximized)
             self.showMaximized()  # BrickMote opens full screen
         else:
             self.show()
         self.raise_()
         self.activateWindow()
         self.poll_presence()
-        QTimer.singleShot(400, self._on_window_opened)  # also when it was already open
+        QTimer.singleShot(400, lambda: self._on_window_opened(force=True))  # also when it was already open
 
     # =============================================================== status
     def refresh_identity(self):
@@ -777,11 +778,11 @@ class MainWindow(QMainWindow):
         if self._last_update_check == 0 and not self._update_check_running:
             self.check_updates()  # started hidden in the tray: nobody opened the window yet
 
-    def _on_window_opened(self):
+    def _on_window_opened(self, force: bool = False):
         """Each time BrickMote is opened (launch, tray, desktop shortcut,
         restored from the taskbar): look for an update and present it."""
-        if not self.isVisible() or self.isMinimized():
-            return
+        if not force and (not self.isVisible() or self.isMinimized()):
+            return  # e.g. started minimized with Windows: nobody is looking yet
         now = time.monotonic()
         if now - self._last_opened < 3:
             return  # show + state change events of the same opening
@@ -798,7 +799,6 @@ class MainWindow(QMainWindow):
             release is None
             or release.version == self.core.settings.skipped_update
             or not self.isVisible()
-            or self.isMinimized()
             or QApplication.activeModalWidget() is not None
         ):
             return
@@ -829,7 +829,7 @@ class MainWindow(QMainWindow):
         self.update_banner.show()
         if release.version == self.core.settings.skipped_update:
             return
-        if self.isVisible() and not self.isMinimized():
+        if self.isVisible():
             if self._present_update:
                 self._present_now()
         elif self.tray:
