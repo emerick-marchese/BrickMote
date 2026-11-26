@@ -160,7 +160,7 @@ class RemoteScreen(QWidget):
         self.live_cursors = True
         targets = {}
         if system is not None:
-            targets["sys"] = (system[0] / COORD_MAX, system[1] / COORD_MAX, None, None)
+            targets["sys"] = (system[0] / COORD_MAX, system[1] / COORD_MAX, None, self.host_label())
         for color, x, y, name in pointers:
             targets[color] = (x / COORD_MAX, y / COORD_MAX, color, name)
         self.pointers.update(targets)
@@ -168,15 +168,20 @@ class RemoteScreen(QWidget):
         if self.pointers.animating() and not self._glide_timer.isActive():
             self._glide_timer.start()
 
+    def host_label(self) -> str:
+        session = self.win.session
+        name = session.peer.name if session is not None else ""
+        name = "".join(ch for ch in str(name) if ch.isprintable()).strip()[:32]
+        return name or "Poste distant"
+
     def _pointer_positions(self) -> list:
         rect = self.target_rect()
         if rect.isEmpty():
             return []
-        show_system = self._show_system_cursor()
         out = []
         for key, fx, fy, color, name in self.pointers.drawn():
-            if key == "sys" and not show_system:
-                continue
+            # "sys": the computer's own cursor (the person at the computer); the
+            # host only sends it when no viewer is the one moving it
             out.append((rect.x() + fx * rect.width(), rect.y() + fy * rect.height(), color, name))
         return out
 

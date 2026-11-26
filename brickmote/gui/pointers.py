@@ -62,14 +62,20 @@ def draw_pointer(p: QPainter, x: float, y: float, color: Optional[QColor], name:
     p.setPen(QPen(outline, 1.4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
     p.setBrush(fill)
     p.drawPath(arrow_path(x, y))
-    if name and color is not None:
+    if name:
         p.setFont(font)
         fm = QFontMetricsF(font)
         box = QRectF(x + LABEL_DX, y + LABEL_DY, fm.horizontalAdvance(name) + 12, fm.height() + 6)
-        p.setPen(Qt.NoPen)
-        p.setBrush(color)
+        if color is not None:
+            p.setPen(Qt.NoPen)
+            p.setBrush(color)
+            text = _text_color(color)
+        else:  # the computer's own cursor: dark label, white outline
+            p.setPen(QPen(QColor("white"), 1))
+            p.setBrush(QColor(17, 19, 23, 235))
+            text = QColor("white")
         p.drawRect(box)  # square corners, like the rest of the app
-        p.setPen(_text_color(color))
+        p.setPen(text)
         p.drawText(box, Qt.AlignCenter, name)
     p.restore()
 

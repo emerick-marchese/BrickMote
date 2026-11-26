@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 
 PALETTE_SIZE = 8
 TICK = 1 / 60
+OWNER_TOLERANCE = 3  # px
 DRIVE_HOLD = 0.6  # s: after a viewer moved the real cursor, the cursor is "theirs"
 MAX_BUFFERED = 256 * 1024  # a viewer whose link is saturated skips pointer updates
 NAME_MAX = 32
@@ -149,6 +150,21 @@ class CursorHub:
         active = [p for p in self.members.values() if p.pos is not None and now - p.drove_at < DRIVE_HOLD]
         return max(active, key=lambda p: p.drove_at, default=None)
 
+    def owner(self) -> Optional[Participant]:
+        """The viewer who put the real cursor where it is, if any: its colored
+        pointer already shows it. Otherwise the cursor belongs to the person
+        at the computer (or nobody touched it since)."""
+        if self.system is None or self._local_was_active:
+            return None
+        driver = self.driver()
+        if driver is not None:
+            return driver
+        x, y = self.system
+        for p in self.members.values():
+            if p.pos is not None and abs(p.pos[0] - x) <= OWNER_TOLERANCE and abs(p.pos[1] - y) <= OWNER_TOLERANCE:
+                return p
+        return None
+
     def view_for(self, session) -> Optional[dict]:
         monitor = session.current_monitor()
         if monitor is None:
@@ -161,9 +177,10 @@ class CursorHub:
             if n is not None:
                 others.append([p.color, n[0], n[1], p.name])
         system = None
-        if self.system is not None and (self._local_was_active or self.driver() is None):
-            # while a viewer drives, its colored pointer already shows where
-            # the real cursor is: no second arrow on top of it
+        if self.system is not None and self.owner() is None:
+            # the computer's own cursor (the person at the computer): shown to
+            # every viewer, even the one in control. When a viewer moved it,
+            # its colored pointer already shows it: no second arrow
             n = to_norm(monitor, *self.system)
             system = list(n) if n else None
         msg = {"t": "cursors", "sys": system, "p": others}

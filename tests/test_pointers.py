@@ -79,3 +79,21 @@ def test_glide_is_smooth_and_bounded():
     assert not ps.animating(now=10.5)
     ps.update({}, now=11)
     assert ps.drawn() == []
+
+
+async def test_everyone_sees_the_cursor_of_the_person_at_the_computer():
+    hub = CursorHub()
+    a, b = _Session(LEFT), _Session(LEFT)
+    hub.join(a, "A")
+    hub.join(b, "B")
+    hub.point(a, LEFT, 1000, 1000, drove=True)  # A controls the computer
+    hub.system = to_abs(LEFT, 1000, 1000)  # the real cursor is where A put it
+    assert hub.view_for(a)["sys"] is None and hub.view_for(b)["sys"] is None  # A's colored pointer shows it
+    hub.members[a].drove_at = 0  # A stopped moving, its pointer rests on the cursor
+    assert hub.view_for(b)["sys"] is None, "still A's cursor: no second arrow"
+    hub.system = (900, 500)  # the person at the computer moves the real mouse
+    assert hub.view_for(a)["sys"] is not None, "even the viewer in control sees it"
+    assert hub.view_for(b)["sys"] is not None
+    for s in list(hub.members):
+        hub.leave(s)
+    await hub._task
