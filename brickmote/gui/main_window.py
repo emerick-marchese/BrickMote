@@ -155,11 +155,13 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(2000, self.poll_presence)
         self._update_timer = QTimer(self, interval=12 * 3600 * 1000, timeout=self.check_updates)
         self._update_timer.start()
-        self._update_dialogs_shown: set[str] = set()  # versions already presented this run
+        self._present_update = False  # show the update dialog when the running check finds one
+        self._update_check_running = False
+        self._last_opened = 0.0
         self._update_retry = 0
-        self._last_update_check = time.monotonic()  # the first check is scheduled below
+        self._last_update_check = 0.0
         self.update_check_failed.connect(self._retry_update_check)
-        QTimer.singleShot(3000, self.check_updates)
+        QTimer.singleShot(3000, self._initial_update_check)
 
     # ================================================================ layout
     def _build(self):
@@ -474,6 +476,7 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
         self.poll_presence()
+        QTimer.singleShot(400, self._on_window_opened)  # also when it was already open
 
     # =============================================================== status
     def refresh_identity(self):
@@ -742,10 +745,12 @@ class MainWindow(QMainWindow):
 
     # --------------------------------------------------- mises à jour
     def check_updates(self):
-        if not self.core.settings.check_updates:
+        if not self.core.settings.check_updates or self._update_check_running:
             return
+        self._update_check_running = True
 
         def done(fut):
+            self._update_check_running = False
             try:
                 release = fut.result()
             except Exception as exc:  # noqa: BLE001 - offline, GitHub down...: try again soon
@@ -765,30 +770,46 @@ class MainWindow(QMainWindow):
         self._update_retry += 1
         QTimer.singleShot(delay * 1000, self.check_updates)
 
-    def _maybe_show_update(self):
-        """The window just became visible: present a waiting update once."""
+    def _initial_update_check(self):
+        if self._last_update_check == 0 and not self._update_check_running:
+            self.check_updates()  # started hidden in the tray: nobody opened the window yet
+
+    def _on_window_opened(self):
+        """Each time BrickMote is opened (launch, tray, desktop shortcut,
+        restored from the taskbar): look for an update and present it."""
+        if not self.isVisible() or self.isMinimized():
+            return
+        now = time.monotonic()
+        if now - self._last_opened < 3:
+            return  # show + state change events of the same opening
+        self._last_opened = now
+        self._present_update = True
+        if self._release is not None and now - self._last_update_check < 60:
+            self._present_now()  # just checked: no need to ask GitHub again
+        else:
+            self.check_updates()
+
+    def _present_now(self):
         release = self._release
         if (
-            release is not None
-            and release.version not in self._update_dialogs_shown
-            and release.version != self.core.settings.skipped_update
-            and self.isVisible()
-            and not self.isMinimized()
-            and QApplication.activeModalWidget() is None
+            release is None
+            or release.version == self.core.settings.skipped_update
+            or not self.isVisible()
+            or self.isMinimized()
+            or QApplication.activeModalWidget() is not None
         ):
-            self._update_dialogs_shown.add(release.version)
-            self._show_update_dialog(release, updater.install_kind() == "windows-installed")
-        elif time.monotonic() - self._last_update_check > 3600:
-            self.check_updates()  # opened long after the last check: look again
+            return
+        self._present_update = False
+        self._show_update_dialog(release, updater.install_kind() == "windows-installed")
 
     def showEvent(self, event):
         super().showEvent(event)
-        QTimer.singleShot(600, self._maybe_show_update)
+        QTimer.singleShot(400, self._on_window_opened)
 
     def changeEvent(self, event):
         super().changeEvent(event)
         if event.type() == QEvent.WindowStateChange and not self.isMinimized() and self.isVisible():
-            QTimer.singleShot(600, self._maybe_show_update)
+            QTimer.singleShot(400, self._on_window_opened)
 
     def _on_update_found(self, release):
         self._release = release
@@ -803,13 +824,13 @@ class MainWindow(QMainWindow):
             self.update_text.setText(f"<b>BrickMote {release.version} est disponible.</b>")
             self.btn_update.setText("Télécharger")
         self.update_banner.show()
-        if release.version in self._update_dialogs_shown or release.version == self.core.settings.skipped_update:
+        if release.version == self.core.settings.skipped_update:
             return
         if self.isVisible() and not self.isMinimized():
-            self._maybe_show_update()
-            return
-        # hidden in the tray (started with Windows): the dialog waits for the window
-        if self.tray:
+            if self._present_update:
+                self._present_now()
+        elif self.tray:
+            # hidden in the tray: the dialog comes when the window is opened
             self.tray.showMessage("BrickMote", f"Nouvelle version disponible : {release.version}")
 
     def _show_update_dialog(self, release, installable: bool):
