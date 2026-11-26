@@ -116,6 +116,7 @@ class MainWindow(QMainWindow):
     update_check_failed = Signal()
     update_installer_ready = Signal(object)  # Path of a verified installer
     update_failed = Signal(str)
+    update_progress = Signal(int, int)  # bytes downloaded, total
 
     def __init__(self, core: BrickMoteCore, core_thread: CoreThread, ui: QtCoreUI):
         super().__init__()
@@ -405,7 +406,14 @@ class MainWindow(QMainWindow):
         self.wake_result.connect(self.show_toast)
         self.update_found.connect(self._on_update_found)
         self.update_installer_ready.connect(self._on_installer_ready)
-        self.update_failed.connect(lambda msg: self.show_toast(f"Mise à jour impossible : {msg}", False))
+        self.update_failed.connect(self._on_update_failed)
+        from .update_overlay import UpdateOverlay
+
+        self.update_overlay = UpdateOverlay(self)  # covers the whole window during an update
+        self.update_overlay.dismissed.connect(self._end_update_screen)
+        self.update_progress.connect(self.update_overlay.progress)
+        self._updating = False  # mandatory update in progress: the application is locked
+        self._final_quit = False
         self.btn_update.clicked.connect(self._update_clicked)
         self._release = None
         self.nav_settings.clicked.connect(self.open_settings)
@@ -833,6 +841,8 @@ class MainWindow(QMainWindow):
         Returns False when it cannot be done automatically."""
         if updater.install_kind() != "windows-installed":
             return False
+        if self._updating:
+            return True  # already on its way
         if self._busy():
             self._mandatory_pending = release
             if not self._mandatory_timer.isActive():
@@ -856,28 +866,82 @@ class MainWindow(QMainWindow):
         except OSError:
             pass
         shown = self.isVisible() and not self.isMinimized()
-        message = f"Mise à jour obligatoire vers BrickMote {release.version} : redémarrage automatique dans un instant…"
-        if updater.request_service_update():
+        if not shown:
+            # nobody is looking (started with Windows): the update service
+            # downloads and installs it; BrickMote comes back by itself
+            if updater.request_service_update():
+                self._spawn_relauncher(release.version, minimized=True, window=False)
+                if self.tray:
+                    self.tray.showMessage("BrickMote", f"Mise à jour vers BrickMote {release.version}…")
+                QTimer.singleShot(1500, self._quit_for_update)  # the service waits for BrickMote to close
+                return True
+            return False
+        # someone is looking: the whole window shows the progress, nothing else
+        # can be done meanwhile
+        self._start_update_screen(release)
+        return True
+
+    def _start_update_screen(self, release):
+        self._updating = True
+        self._release = release
+        self.centralWidget().setEnabled(False)
+        self.update_overlay.start(release.version)
+        name = updater.asset_name(release.version, "windows-installed")
+        target = updater.incoming_dir()  # the update service reuses it (verified again)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            target = Path(tempfile.mkdtemp(prefix="brickmote-update-"))
+
+        def progress(done, total):
+            self.update_progress.emit(done, total)
+
+        def done(fut):
             try:
-                updater.spawn_relauncher(release.version, minimized=not shown)
-            except Exception as exc:  # noqa: BLE001 - the update service still installs it
-                logging.getLogger(__name__).warning("relance après mise à jour impossible : %s", exc)
-            self.update_text.setText(f"<b>{message}</b>")
-            self.update_banner.show()
-            self.btn_update.setEnabled(False)
-            if shown:
-                self.show_toast(message)
-            elif self.tray:
-                self.tray.showMessage("BrickMote", message)
-            QTimer.singleShot(2500, self.quit)  # the service waits for BrickMote to close
-            return True
-        if shown:
+                self.update_installer_ready.emit(fut.result())
+            except Exception as exc:  # noqa: BLE001
+                self.update_failed.emit(str(exc))
+
+        self.core_thread.submit(
+            asyncio.to_thread(updater.download_verified, release, name, target, progress=progress)
+        ).add_done_callback(done)
+
+    def _hand_over_update(self, path):
+        """Downloaded and verified: let the installer take over, then restart."""
+        release = self._release
+        self.update_overlay.stage("Installation de la mise à jour… BrickMote va redémarrer tout seul.")
+        if updater.request_service_update():
+            self._spawn_relauncher(release.version, minimized=False, window=True)
+            QTimer.singleShot(1500, self._quit_for_update)  # the service waits for BrickMote to close
+            return
+        try:
             # installed before 1.0.9: the update task cannot be started from
-            # here yet; Windows asks for confirmation once (UAC)
-            self.show_toast(message)
-            self._update_clicked()
-            return True
-        return False
+            # here; Windows asks for confirmation once (UAC), then relaunches
+            updater.launch_installer_elevated(path)
+        except Exception as exc:  # noqa: BLE001
+            self.update_overlay.fail(f"L'installation n'a pas pu démarrer ({exc}).")
+            return
+        QTimer.singleShot(1000, self._quit_for_update)
+
+    def _spawn_relauncher(self, version, minimized: bool, window: bool):
+        try:
+            updater.spawn_relauncher(version, minimized=minimized, window=window)
+        except Exception as exc:  # noqa: BLE001 - the update service still installs it
+            logging.getLogger(__name__).warning("relance après mise à jour impossible : %s", exc)
+
+    def _quit_for_update(self):
+        self._final_quit = True
+        self.quit()
+
+    def _end_update_screen(self):
+        self._updating = False
+        self.centralWidget().setEnabled(True)
+
+    def _on_update_failed(self, msg: str):
+        if self._updating:
+            self.update_overlay.fail(f"Le téléchargement a échoué : {msg}")
+        else:
+            self.show_toast(f"Mise à jour impossible : {msg}", False)
 
     def _retry_mandatory(self):
         if self._mandatory_pending is not None and not self._busy():
@@ -939,6 +1003,9 @@ class MainWindow(QMainWindow):
         ).add_done_callback(done)
 
     def _on_installer_ready(self, path):
+        if self._updating:
+            self._hand_over_update(path)
+            return
         try:
             updater.launch_installer_elevated(path)  # Windows asks for confirmation (UAC)
         except Exception as exc:  # noqa: BLE001
@@ -1269,6 +1336,9 @@ class MainWindow(QMainWindow):
 
     # ============================================================= closing
     def closeEvent(self, event):
+        if self._updating and not self._final_quit:
+            event.ignore()  # "ne fermez pas BrickMote": the update is running
+            return
         if self._quitting or self.tray is None:
             self._quitting = True
             event.accept()
@@ -1281,6 +1351,8 @@ class MainWindow(QMainWindow):
         )
 
     def quit(self):
+        if self._updating and not self._final_quit:
+            return  # tray "Quitter" during an update: refused
         self._quitting = True
         for win in list(self._viewers):
             win.close()

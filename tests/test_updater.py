@@ -224,7 +224,7 @@ def test_wait_for_app_exit():
 
 def test_relauncher_waits_for_the_new_version_and_is_injection_proof():
     script = updater.relauncher_script("1.2.3", r"C:\Program Files\Brick'Mote\BrickMote.exe", minimized=True)
-    assert "-eq '1.2.3'" in script and "'--minimized'" in script
+    assert "($v -eq '1.2.3')" in script and "'--minimized'" in script and "Windows.Forms" not in script
     assert "Brick''Mote" in script  # quotes escaped
     assert updater.INNO_APP_ID in script
     for bad in ("1.2.3'; Remove-Item C:\\ -Recurse; '", "latest", ""):
@@ -267,4 +267,7 @@ def test_service_retries_until_the_network_is_up(monkeypatch):
 
 def test_relauncher_without_version_only_waits_for_the_installer():
     script = updater.relauncher_script(None, "C:\\BrickMote.exe", minimized=False)
-    assert "-eq '" not in script and "if(-not $setup)" in script and "@()" in script
+    assert "-eq '" not in script and "[bool](-not $setup)" in script
+    assert script.rstrip().endswith("Start-Process -FilePath 'C:\\BrickMote.exe'}")  # no empty -ArgumentList
+    shown = updater.relauncher_script("1.2.3", "C:\\BrickMote.exe", minimized=False, window=True)
+    assert "Windows.Forms" in shown and "ShowDialog" in shown and "Start-Process" in shown

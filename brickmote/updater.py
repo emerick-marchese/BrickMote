@@ -199,8 +199,25 @@ def verify_sums(sums: bytes, signature: bytes, keys: Optional[tuple] = None) -> 
     return hashes
 
 
-def download_verified(release: Release, name: str, dest_dir: Path, get: Getter = http_get) -> Path:
-    """Download ``name`` from ``release`` and return its path once verified."""
+def incoming_dir() -> Path:
+    """Where the application leaves the installer it downloaded (with a
+    progress bar) for the update service. Anyone may write here: the service
+    only uses a file whose SHA-256 matches the signed checksum list."""
+    return Path(os.environ.get("ProgramData") or r"C:\ProgramData") / "BrickMote" / "incoming"
+
+
+def download_verified(
+    release: Release,
+    name: str,
+    dest_dir: Path,
+    get: Getter = http_get,
+    progress: Optional[Callable[[int, int], None]] = None,
+    prefetched: Optional[Path] = None,
+) -> Path:
+    """Download ``name`` from ``release`` and return its path once verified.
+
+    ``prefetched``: a copy downloaded earlier (possibly by someone else): it
+    is read into memory and used only if it matches the signed checksum."""
     for needed in (SUMS_NAME, SIG_NAME, name):
         if needed not in release.assets:
             raise UpdateError(f"fichier absent de la release : {needed}")
@@ -217,6 +234,14 @@ def download_verified(release: Release, name: str, dest_dir: Path, get: Getter =
     dest_dir.mkdir(parents=True, exist_ok=True)
     final = dest_dir / name
     partial = dest_dir / (name + ".part")
+    if prefetched is not None:
+        data = _read_prefetched(Path(prefetched), size)
+        if data is not None and hashlib.sha256(data).hexdigest() == expected:
+            # verified in memory, then written where only we can write: the
+            # copy that is executed is exactly the one that was checked
+            partial.write_bytes(data)
+            os.replace(partial, final)
+            return final
     digest = hashlib.sha256()
     total = 0
     try:
@@ -230,6 +255,8 @@ def download_verified(release: Release, name: str, dest_dir: Path, get: Getter =
                     raise UpdateError("fichier trop volumineux")
                 digest.update(chunk)
                 out.write(chunk)
+                if progress is not None:
+                    progress(total, size)
         if digest.hexdigest() != expected:
             raise UpdateError("empreinte SHA-256 incorrecte : fichier altéré, mise à jour refusée")
         os.replace(partial, final)
@@ -237,6 +264,17 @@ def download_verified(release: Release, name: str, dest_dir: Path, get: Getter =
         if partial.exists():
             partial.unlink()
     return final
+
+
+def _read_prefetched(path: Path, size: int) -> Optional[bytes]:
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        with open(path, "rb") as f:
+            data = f.read(size + 1)
+    except OSError:
+        return None
+    return data if len(data) == size else None
 
 
 def check_for_update(get: Getter = http_get) -> Optional[Release]:
@@ -337,38 +375,64 @@ def setup_running() -> bool:
     return False
 
 
-def relauncher_script(version: Optional[str], exe: str, minimized: bool, timeout_min: int = 15) -> str:
-    """PowerShell run hidden, as the user: waits until the update service has
+def relauncher_script(
+    version: Optional[str], exe: str, minimized: bool, timeout_min: int = 15, window: bool = False
+) -> str:
+    """PowerShell run as the user: waits until the update service has
     installed ``version``, then starts BrickMote again (also after a timeout,
-    so the computer never stays without BrickMote)."""
+    so the computer never stays without BrickMote). With ``window``, a small
+    "installation in progress" window is shown meanwhile."""
     if version is not None and not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise UpdateError("version invalide")
-    installed = f"$v -eq '{version}' -and " if version else ""
     exe_ps = exe.replace("'", "''")
-    args = "'--minimized'" if minimized else "@()"
+    # (an empty -ArgumentList is an error in PowerShell: leave it out)
+    launch = f"Start-Process -FilePath '{exe_ps}'" + (" -ArgumentList '--minimized'" if minimized else "")
     keys = ", ".join(
-        f"'{root}\\SOFTWARE\\{view}Microsoft\\Windows\\CurrentVersion\\Uninstall\\{INNO_APP_ID}'"
-        for root in ("HKLM:",)
+        f"'HKLM:\\SOFTWARE\\{view}Microsoft\\Windows\\CurrentVersion\\Uninstall\\{INNO_APP_ID}'"
         for view in ("", "WOW6432Node\\")
     )
-    return (
-        "$ErrorActionPreference='SilentlyContinue';"
-        f"$deadline=(Get-Date).AddMinutes({int(timeout_min)});"
-        "Start-Sleep -Seconds 8;"
-        "while((Get-Date) -lt $deadline){"
-        f"$v=($({keys}) | ForEach-Object {{ (Get-ItemProperty -Path $_).DisplayVersion }} | Where-Object {{ $_ }} | Select-Object -First 1);"
-        "$setup=Get-Process -Name 'BrickMote-Setup*';"
-        f"if({installed}-not $setup){{break}};"
-        "Start-Sleep -Seconds 3};"
-        "Start-Sleep -Seconds 2;"
-        f"if(-not (Get-Process -Name 'BrickMote' | Where-Object {{ $_.SessionId -eq (Get-Process -Id $PID).SessionId }})){{"
-        f"Start-Process -FilePath '{exe_ps}' -ArgumentList {args}}}"
-    )
+    done = f"(($v -eq '{version}') -and (-not $setup))" if version else "(-not $setup)"
+    script = [
+        "$ErrorActionPreference='SilentlyContinue'",
+        f"$deadline=(Get-Date).AddMinutes({int(timeout_min)})",
+        "$start=Get-Date",
+        "function Test-Done {"
+        " if((Get-Date) -ge $deadline){return $true};"
+        " if(((Get-Date)-$start).TotalSeconds -lt 8){return $false};"
+        f" $v=($({keys}) | ForEach-Object {{ (Get-ItemProperty -Path $_).DisplayVersion }} | Where-Object {{ $_ }} | Select-Object -First 1);"
+        " $setup=Get-Process -Name 'BrickMote-Setup*';"
+        f" return [bool]{done} }}",
+    ]
+    if window:
+        script += [
+            "Add-Type -AssemblyName System.Windows.Forms",
+            "$f=New-Object Windows.Forms.Form",
+            "$f.Text='BrickMote';$f.ClientSize=New-Object Drawing.Size(440,120);$f.StartPosition='CenterScreen'",
+            "$f.TopMost=$true;$f.FormBorderStyle='FixedDialog';$f.ControlBox=$false;$f.ShowInTaskbar=$true",
+            "$f.BackColor=[Drawing.Color]::FromArgb(24,27,32);$f.ForeColor=[Drawing.Color]::White",
+            "$l=New-Object Windows.Forms.Label;$l.Left=20;$l.Top=16;$l.Width=400;$l.Height=50",
+            "$l.Font=New-Object Drawing.Font('Segoe UI',10)",
+            "$l.Text=\"Installation de la mise à jour de BrickMote…`nNe redémarrez pas l'ordinateur : BrickMote se relance tout seul.\"",
+            "$p=New-Object Windows.Forms.ProgressBar;$p.Style='Marquee';$p.MarqueeAnimationSpeed=30;$p.Left=20;$p.Top=76;$p.Width=400;$p.Height=18",
+            "$f.Controls.Add($l);$f.Controls.Add($p)",
+            "$t=New-Object Windows.Forms.Timer;$t.Interval=1500",
+            "$t.Add_Tick({ if(Test-Done){ $t.Stop(); $f.Close() } });$t.Start()",
+            "[void]$f.ShowDialog()",
+        ]
+    else:
+        script.append("while(-not (Test-Done)){ Start-Sleep -Seconds 3 }")
+    script += [
+        "Start-Sleep -Seconds 2",
+        "$me=(Get-Process -Id $PID).SessionId",
+        f"if(-not (Get-Process -Name 'BrickMote' | Where-Object {{ $_.SessionId -eq $me }})){{"
+        f"{launch}}}",
+    ]
+    return "\n".join(script)
 
 
-def spawn_relauncher(version: Optional[str], minimized: bool) -> None:
+def spawn_relauncher(version: Optional[str], minimized: bool, window: bool = False) -> None:
     exe = str(Path(sys.executable).resolve())
-    script = relauncher_script(version, exe, minimized)
+    script = relauncher_script(version, exe, minimized, window=window)
     encoded = base64.b64encode(script.encode("utf-16-le")).decode()
     subprocess.Popen(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
@@ -413,7 +477,13 @@ def run_update_service() -> int:
             log.info("BrickMote %s est à jour", __version__)
             return 0
         name = asset_name(release.version, "windows-installed")
-        installer = download_verified(release, name, updates)
+        prefetched = incoming_dir() / name  # downloaded by the application (progress bar)
+        installer = download_verified(release, name, updates, prefetched=prefetched)
+        for leftover in incoming_dir().glob("BrickMote-Setup-*"):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
         if not wait_for_app_exit():
             # BrickMote is open and did not ask for this update: installing now
             # would close it without restarting it, leaving this computer
