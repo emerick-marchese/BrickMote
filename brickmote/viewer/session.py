@@ -43,6 +43,8 @@ class ViewerSession(PeerSession):
                 "quality": msg.get("quality") if isinstance(msg.get("quality"), str) else "balanced",
                 "fps": msg.get("fps") if isinstance(msg.get("fps"), int) else 20,
                 "wol": sanitize_wol(msg.get("wol")),
+                "cursors": msg.get("cursors") is True,
+                "color": msg.get("color") if _is_color(msg.get("color")) else None,
             }
             self.permissions = sanitize_permissions(msg.get("perms"))
             direct = _sanitize_direct(msg.get("direct"))
@@ -53,6 +55,10 @@ class ViewerSession(PeerSession):
                     pass
             self.events.on_info(self, dict(self.info))
             self.events.on_permissions(self, dict(self.permissions))
+        elif t == "cursors":
+            parsed = _sanitize_cursors(msg)
+            if parsed is not None:
+                self.events.on_cursors(self, *parsed)
         elif t == "status":
             status = msg.get("s")
             if status in ("ok", "locked", "unavailable"):
@@ -67,6 +73,8 @@ class ViewerSession(PeerSession):
 
     async def mouse(self, action: str, nx: int, ny: int, button: str | None = None) -> None:
         if not self._can_control():
+            if action == "move":  # watching only: still show the others where we point
+                await self.send_json({"t": "ptr", "x": _clamp(nx), "y": _clamp(ny)})
             return
         msg = {"t": "mouse", "a": action, "x": _clamp(nx), "y": _clamp(ny)}
         if action in ("down", "up"):
@@ -74,6 +82,10 @@ class ViewerSession(PeerSession):
                 return
             msg["b"] = button
         await self.send_json(msg)
+
+    async def pointer_out(self) -> None:
+        """Our mouse left the remote screen: hide our pointer for the others."""
+        await self.send_json({"t": "ptr", "out": True})
 
     async def wheel(self, dx: int, dy: int) -> None:
         if self._can_control():
@@ -111,6 +123,33 @@ class ViewerSession(PeerSession):
 
 def _clamp(v) -> int:
     return max(0, min(COORD_MAX, int(v)))
+
+
+def _is_coord(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= COORD_MAX
+
+
+def _is_color(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and 0 <= v < 8
+
+
+def _sanitize_cursors(msg: dict):
+    """Pointers announced by the host (untrusted input)."""
+    system = msg.get("sys")
+    if not (isinstance(system, list) and len(system) == 2 and all(_is_coord(v) for v in system)):
+        system = None
+    pointers = []
+    raw = msg.get("p")
+    if not isinstance(raw, list):
+        return None
+    for item in raw[:16]:
+        if not (isinstance(item, list) and len(item) == 4):
+            continue
+        color, x, y, name = item
+        if _is_color(color) and _is_coord(x) and _is_coord(y) and isinstance(name, str):
+            name = "".join(ch for ch in name if ch.isprintable()).strip()[:32] or "Utilisateur"
+            pointers.append((color, x, y, name))
+    return (tuple(system) if system else None), pointers
 
 
 def _sanitize_direct(value: object):

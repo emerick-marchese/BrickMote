@@ -6,7 +6,7 @@ import time
 from typing import Optional
 
 from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QGuiApplication, QImage, QPainter, QPen
+from PySide6.QtGui import QAction, QColor, QGuiApplication, QImage, QPainter, QRegion
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -27,6 +27,7 @@ from ..util import format_id
 from .bridge import CoreThread, QtSessionEvents
 from .dialogs import ChatDialog
 from .keymap import translate
+from .pointers import PointerSet, bounds, color_of, draw_pointer, label_font, pointer_cursor
 from .icons import icon, pixmap
 from .style import BRICK, logo as brand_logo
 
@@ -49,6 +50,13 @@ class RemoteScreen(QWidget):
         self._move_timer.start()
         self._pressed: dict[int, tuple] = {}
         self._wheel_acc = [0.0, 0.0]
+        # live pointers (the others' and the computer's own cursor), in image fractions
+        self.pointers = PointerSet()
+        self.live_cursors = False  # the host sends pointers separately (newer hosts)
+        self._label_font = label_font(self.font())
+        self._pointer_area = QRegion()  # where pointers were last drawn
+        self._glide_timer = QTimer(self, interval=8, timeout=self._glide_tick)
+        self._glide_timer.setTimerType(Qt.PreciseTimer)
 
     # ---------------------------------------------------------- painting
     def apply_frame(self, width: int, height: int, cursor, images) -> None:
@@ -62,10 +70,10 @@ class RemoteScreen(QWidget):
             p.drawImage(x, y, img)
             dirty = dirty.united(QRect(x, y, img.width(), img.height()))
         p.end()
-        moved = cursor != self.cursor_pos
+        moved = cursor != self.cursor_pos and not self.live_cursors
         self.cursor_pos = cursor
-        if resized or moved or self.win.view_only or not self.win.can_control():
-            self.update()  # full repaint (new size, or the remote cursor dot moved)
+        if resized or moved:
+            self.update()  # full repaint (new size, or the remote cursor moved: older hosts)
         elif not dirty.isEmpty():
             # repaint only the changed area, mapped to widget coordinates
             r = self.target_rect()
@@ -101,17 +109,58 @@ class RemoteScreen(QWidget):
         rect = self.target_rect()
         p.setRenderHint(QPainter.SmoothPixmapTransform, rect.width() < self.image.width())
         p.drawImage(rect, self.image)
-        if self.cursor_pos and (self.win.view_only or not self.win.can_control()):
+        if self.live_cursors:
+            area = QRegion()
+            for x, y, color, name in self._pointer_positions():
+                draw_pointer(p, x, y, None if color is None else color_of(color), name, self._label_font)
+                area += bounds(x, y, name, self._label_font).toAlignedRect()
+            self._pointer_area = area
+        elif self.cursor_pos and self._show_system_cursor():
             sx = rect.width() / self.image.width()
-            cx = rect.x() + self.cursor_pos[0] * sx
-            cy = rect.y() + self.cursor_pos[1] * sx
-            p.setRenderHint(QPainter.Antialiasing)
-            p.setPen(QPen(QColor("white"), 2))
-            p.setBrush(QColor(BRICK))
-            p.drawEllipse(QPointF(cx, cy), 6, 6)
+            draw_pointer(p, rect.x() + self.cursor_pos[0] * sx, rect.y() + self.cursor_pos[1] * sx, None, None, self._label_font)
         if self.overlay:
             self._paint_overlay(p)
         p.end()
+
+    # ------------------------------------------------------------ pointers
+    def _show_system_cursor(self) -> bool:
+        # when we control the computer, our own mouse cursor is the real one
+        return self.win.view_only or not self.win.can_control()
+
+    def set_cursors(self, system, pointers) -> None:
+        """Positions from the host (0..COORD_MAX on the monitor we watch)."""
+        self.live_cursors = True
+        targets = {}
+        if system is not None:
+            targets["sys"] = (system[0] / COORD_MAX, system[1] / COORD_MAX, None, None)
+        for color, x, y, name in pointers:
+            targets[color] = (x / COORD_MAX, y / COORD_MAX, color, name)
+        self.pointers.update(targets)
+        self._glide_tick()
+        if self.pointers.animating() and not self._glide_timer.isActive():
+            self._glide_timer.start()
+
+    def _pointer_positions(self) -> list:
+        rect = self.target_rect()
+        if rect.isEmpty():
+            return []
+        show_system = self._show_system_cursor()
+        out = []
+        for key, fx, fy, color, name in self.pointers.drawn():
+            if key == "sys" and not show_system:
+                continue
+            out.append((rect.x() + fx * rect.width(), rect.y() + fy * rect.height(), color, name))
+        return out
+
+    def _glide_tick(self) -> None:
+        """Repaint only around the pointers (where they were + where they are)."""
+        area = QRegion(self._pointer_area)
+        for x, y, color, name in self._pointer_positions():
+            area += bounds(x, y, name, self._label_font).toAlignedRect()
+        if not area.isEmpty():
+            self.update(area)
+        if not self.pointers.animating():
+            self._glide_timer.stop()
 
     def _paint_overlay(self, p: QPainter):
         title, text = self.overlay
@@ -148,6 +197,11 @@ class RemoteScreen(QWidget):
         pos = self._norm(e.position())
         if pos:
             self._pending_move = pos
+
+    def leaveEvent(self, e):
+        self._pending_move = None
+        self.win.send(lambda s: s.pointer_out())
+        super().leaveEvent(e)
 
     def _flush_move(self):
         if self._pending_move is not None:
@@ -273,6 +327,7 @@ class ViewerWindow(QMainWindow):
         sig.connect_result.connect(self._on_connect_result)
         sig.frame.connect(self._on_frame)
         sig.status.connect(self._on_remote_status)
+        sig.cursors.connect(self._on_cursors)
         sig.info.connect(self._on_info)
         sig.permissions.connect(self._on_permissions)
         sig.closed.connect(self._on_closed)
@@ -486,8 +541,23 @@ class ViewerWindow(QMainWindow):
     def _on_permissions(self, session, perms: dict):
         self.act_file.setEnabled(bool(perms.get("files")))
         self.act_clip.setEnabled(bool(perms.get("clipboard")))
-        self.screen.setCursor(Qt.CrossCursor if perms.get("control") and not self.view_only else Qt.ForbiddenCursor)
+        self._apply_cursor_shape()
+        self.screen.update()  # the computer's cursor is drawn only when we do not control it
         self._update_stats()
+
+    def _apply_cursor_shape(self):
+        color = self.session.info.get("color") if self.session else None
+        if color is not None:
+            # our pointer, in the color the other participants see it
+            self.screen.setCursor(pointer_cursor(color, self.devicePixelRatioF()))
+        elif self.can_control() and not self.view_only:
+            self.screen.setCursor(Qt.CrossCursor)
+        else:
+            self.screen.setCursor(Qt.ForbiddenCursor)
+
+    def _on_cursors(self, session, system, pointers):
+        if session is self.session:
+            self.screen.set_cursors(system, pointers)
 
     def _update_stats(self):
         if self.session is None:

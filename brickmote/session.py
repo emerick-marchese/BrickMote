@@ -42,6 +42,7 @@ class SessionEvents:
     # viewer only
     def on_info(self, session, info: dict) -> None: ...
     def on_status(self, session, status: str) -> None: ...
+    def on_cursors(self, session, system, pointers: list) -> None: ...
     def on_frame(self, session, frame_id: int, width: int, height: int, cursor, rects: list) -> None: ...
 
 
@@ -68,6 +69,7 @@ class PeerSession:
         self.events = events
         self.downloads = Path(downloads)
         self.closed = False
+        self._closing = False
         self.close_reason = ""
         self._tasks: list[asyncio.Task] = []
         self._tid = itertools.count(1)
@@ -137,8 +139,12 @@ class PeerSession:
         await self._done.wait()
 
     async def close(self, reason: str = "session terminée", notify: bool = True) -> None:
-        if self.closed:
+        # "closed" is only set after the goodbye is flushed (up to 1 s): a
+        # second close() arriving meanwhile (both sides ending at once) must
+        # not run the teardown twice
+        if self.closed or self._closing:
             return
+        self._closing = True
         if notify:
             try:
                 self.channel.send_nowait(bytes([MSG_JSON]) + encode_json({"t": "bye", "reason": reason[:200]}))

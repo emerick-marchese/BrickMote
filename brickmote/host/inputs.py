@@ -65,6 +65,16 @@ class InputInjector:
         y = m["top"] + round(ny * (m["height"] - 1) / COORD_MAX)
         return x, y
 
+    def position(self) -> Optional[tuple[int, int]]:
+        """Absolute cursor position on the desktop (pixels)."""
+        if not self._ensure():
+            return None
+        try:
+            x, y = self._mouse.position
+            return int(x), int(y)
+        except Exception:  # noqa: BLE001
+            return None
+
     def cursor(self) -> Optional[tuple[float, float]]:
         """Cursor position relative to the monitor, as fractions (0..1)."""
         if not self._ensure():

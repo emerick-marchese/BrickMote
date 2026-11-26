@@ -95,6 +95,9 @@ class Recorder(SessionEvents):
     def on_status(self, s, status):
         self._put("status", status)
 
+    def on_cursors(self, s, system, pointers):
+        self._put("cursors", system, pointers)
+
     async def wait_for(self, kind, timeout=10):
         while True:
             item = await asyncio.wait_for(self.events.get(), timeout)

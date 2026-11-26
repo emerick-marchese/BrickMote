@@ -19,6 +19,8 @@ from .crypto.handshake import (
 )
 from .crypto.identity import Identity
 from .host.authority import HostPolicy
+from .host.cursors import CursorHub
+from .host.inputs import InputInjector
 from .host.session import HostSession
 from .net.discovery import Discovery
 from .net.framing import close_writer, tune_socket
@@ -89,6 +91,13 @@ class BrickMoteCore:
         self._discovery: Optional[Discovery] = None
         self._ip_limiter = RateLimiter(limit=20, window=60)
         self._pending = 0
+        # everyone's pointer, shared between viewers and shown to the local user
+        self.cursor_hub = CursorHub(InputInjector, on_change=self._pointers_changed)
+
+    def _pointers_changed(self, pointers: list) -> None:
+        notify = getattr(self.ui, "pointers_changed", None)
+        if notify is not None:
+            notify(pointers)
 
     # ----------------------------------------------------------- settings
     def save_settings(self) -> None:
@@ -242,6 +251,7 @@ class BrickMoteCore:
             fps=self.settings.fps,
             wol_info=wol,
             direct_info=direct,
+            cursor_hub=self.cursor_hub,
         )
         self.host_sessions.add(session)
         self.audit.write("session_start", peer=result.peer.device_id, ip=address, method=result.method)

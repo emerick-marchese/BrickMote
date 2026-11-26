@@ -36,9 +36,12 @@ class HostSession(PeerSession):
         injector_factory: Callable = InputInjector,
         wol_info: Optional[dict] = None,
         direct_info: Optional[dict] = None,
+        cursor_hub=None,
     ):
         super().__init__(result, events, downloads)
         self.wol_info = wol_info
+        self.cursor_hub = cursor_hub
+        self.color: Optional[int] = None  # this viewer's pointer color (multi-user)
         self.direct_info = direct_info
         self.profile = get_profile(quality)
         self.adaptive = AdaptiveQuality(self.profile)
@@ -80,12 +83,21 @@ class HostSession(PeerSession):
             self.spawn(self.close("capture d'écran impossible sur le poste hôte"))
             return
         self._select_monitor(self.monitors[0]["index"])
+        if self.cursor_hub is not None:
+            self.color = self.cursor_hub.join(self, self.peer.name)
         self.spawn(self._video_loop())
 
     def _list_monitors(self) -> list[dict]:
         if self._capture is None:
             self._capture = self._capture_factory()
         return self._capture.monitors()
+
+    def current_monitor(self) -> Optional[dict]:
+        return next((m for m in self.monitors if m["index"] == self.monitor_index), None)
+
+    def _point(self, msg: dict, drove: bool) -> None:
+        if self.cursor_hub is not None:
+            self.cursor_hub.point(self, self.current_monitor(), msg.get("x"), msg.get("y"), drove)
 
     def _close_capture(self) -> None:
         """Runs in the capture thread."""
@@ -107,10 +119,15 @@ class HostSession(PeerSession):
         return True
 
     async def on_close(self) -> None:
-        self._input_exec.submit(self._injector.release_all)
+        if self.cursor_hub is not None:
+            self.cursor_hub.leave(self)
+        try:  # executors refuse new work while the application exits
+            self._input_exec.submit(self._injector.release_all)
+            self._capture_exec.submit(self._close_capture)
+            self._capture_exec.submit(self._encoder.close)
+        except RuntimeError:
+            pass
         self._input_exec.shutdown(wait=False)
-        self._capture_exec.submit(self._close_capture)
-        self._capture_exec.submit(self._encoder.close)
         self._capture_exec.shutdown(wait=False)
 
     def _info(self) -> dict:
@@ -121,7 +138,10 @@ class HostSession(PeerSession):
             "perms": self.permissions,
             "quality": self.profile.name,
             "fps": self.fps,
+            "cursors": self.cursor_hub is not None,  # live pointers are sent separately
         }
+        if self.color is not None:
+            info["color"] = self.color
         if self.direct_info:
             info["direct"] = self.direct_info
         if self.wol_info:
@@ -285,11 +305,20 @@ class HostSession(PeerSession):
             return
         if t == "ack":
             self._on_ack(msg.get("fid"))
+        elif t == "ptr":
+            # where this viewer points, shown to the others (allowed in view-only)
+            if msg.get("out"):
+                if self.cursor_hub is not None:
+                    self.cursor_hub.hide(self)
+            else:
+                self._point(msg, drove=False)
         elif t in ("mouse", "wheel", "key"):
             if not self.permissions.get("control"):
                 return  # view-only: silently ignore any input
             if t == "mouse":
                 action = msg.get("a")
+                if action in ("move", "down", "up"):
+                    self._point(msg, drove=True)
                 if action == "move":
                     self._inject(self._injector.mouse_move, msg.get("x"), msg.get("y"))
                 elif action in ("down", "up"):

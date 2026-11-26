@@ -304,3 +304,52 @@ async def test_race_connect_keeps_the_first_answer():
     won[1].close()
     assert await _race_connect([("127.0.0.1", free_port())], 0.5) is None
     server.close()
+
+
+async def test_viewers_see_each_others_pointers(tmp_path):
+    host, host_ui = make_core(tmp_path, "host")
+    alice, _ = make_core(tmp_path, "Alice")
+    bob, _ = make_core(tmp_path, "Bob")
+    seen_by_host = []
+    host_ui.pointers_changed = seen_by_host.append
+    for c in (host, alice, bob):
+        await c.start()
+    target = f"127.0.0.1:{host.direct_port}"
+    a_events, b_events = Recorder(), Recorder()
+    a = await alice.connect(target, None, a_events)
+    b = await bob.connect(target, None, b_events)
+    a_info = (await a_events.wait_for("info"))[1]
+    b_info = (await b_events.wait_for("info"))[1]
+    assert a_info["cursors"] and {a_info["color"], b_info["color"]} == {0, 1}
+
+    # Bob only watches (no control needed to point): Alice sees his pointer
+    b.view_only = True
+    await b.mouse("move", 32768, 16384)
+    while True:
+        _, system, pointers = await a_events.wait_for("cursors")
+        if pointers:
+            break
+    color, x, y, name = pointers[0]
+    assert (color, name) == (b_info["color"], "Bob")
+    assert abs(x - 32768) < 200 and abs(y - 16384) < 200
+    assert any(p and p[0][1] == "Bob" for p in seen_by_host)  # the person at the computer too
+
+    # Alice moves the real cursor: Bob sees her colored pointer
+    await a.mouse("move", 1000, 2000)
+    while True:
+        _, system, pointers = await b_events.wait_for("cursors")
+        if pointers and pointers[0][0] == a_info["color"]:
+            break
+    assert pointers[0][3] == "Alice"
+
+    # Bob leaves the remote screen: his pointer disappears for Alice
+    await b.pointer_out()
+    while True:
+        _, system, pointers = await a_events.wait_for("cursors")
+        if not any(p[0] == b_info["color"] for p in pointers):
+            break
+    await b.close()
+    await a.close()
+    for c in (alice, bob, host):
+        await c.stop()
+    assert host.cursor_hub.members == {}

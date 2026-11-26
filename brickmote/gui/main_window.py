@@ -405,6 +405,10 @@ class MainWindow(QMainWindow):
         s.relay_status.connect(self._on_relay_status)
         s.host_session_started.connect(self._on_host_session)
         s.lan_peers.connect(self._on_lan_peers)
+        from .pointer_overlay import PointerOverlay
+
+        self.pointer_overlay = PointerOverlay()  # viewers' pointers on this computer's screens
+        s.pointers.connect(self.pointer_overlay.update)
         h = self.ui.host_events.sig
         h.closed.connect(self._on_host_closed)
         h.chat.connect(self._on_host_chat)
