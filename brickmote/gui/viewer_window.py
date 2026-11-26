@@ -378,10 +378,6 @@ class ViewerWindow(QMainWindow):
         self.wait_title.setObjectName("CardTitle")
         self.wait_title.setAlignment(Qt.AlignCenter)
         lay.addWidget(self.wait_title)
-        self.wait_sas = QLabel("")
-        self.wait_sas.setObjectName("Sas")
-        self.wait_sas.setAlignment(Qt.AlignCenter)
-        lay.addWidget(self.wait_sas)
         self.wait_hint = QLabel("")
         self.wait_hint.setObjectName("Muted")
         self.wait_hint.setWordWrap(True)
@@ -456,7 +452,7 @@ class ViewerWindow(QMainWindow):
         lock.setPixmap(pixmap("lock", "#9AA1AD", 15))
         tb.addWidget(lock)
         self.sas_label = QLabel(" Chiffré de bout en bout ")
-        self.sas_label.setToolTip("Le code de sécurité doit être identique sur les deux écrans")
+        self.sas_label.setToolTip("Connexion chiffrée de bout en bout, clé du poste distant vérifiée")
         tb.addWidget(self.sas_label)
 
     # ------------------------------------------------------- networking
@@ -480,11 +476,7 @@ class ViewerWindow(QMainWindow):
     def _on_waiting(self, peer, sas: str):
         self.setWindowTitle(f"BrickMote - {peer.name} ({format_id(peer.device_id)})")
         self.wait_title.setText(f"Connexion chiffrée établie avec {peer.name}")
-        self.wait_sas.setText(sas)
-        self.wait_hint.setText(
-            "En attente de l'acceptation par l'utilisateur distant.\n"
-            "Ce code de sécurité doit être identique sur les deux écrans."
-        )
+        self.wait_hint.setText("En attente de l'acceptation par l'utilisateur distant.")
 
     def _on_connect_result(self, fut):
         if fut.cancelled():
@@ -515,7 +507,6 @@ class ViewerWindow(QMainWindow):
         self.setWindowTitle(f"BrickMote - {peer.name} ({format_id(peer.device_id)})")
         self.stack.setCurrentWidget(self.screen)
         self.screen.setFocus()
-        self.sas_label.setText(f" Code de sécurité  {session.sas} ")
         self._set_profile(self.profile.name)
         self._send_viewport()
         self._stats.start()

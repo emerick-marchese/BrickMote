@@ -192,15 +192,63 @@ def test_fetch_latest_keeps_notes():
     assert rel.notes == "- Nouveauté"
 
 
-def test_service_postpones_when_the_app_is_running(monkeypatch, tmp_path):
+def test_service_postpones_when_the_app_stays_open(monkeypatch, tmp_path):
     monkeypatch.setattr(updater, "install_kind", lambda: "windows-installed")
     monkeypatch.setattr(updater.sys, "executable", str(tmp_path / "BrickMote.exe"))
     monkeypatch.setattr(updater, "_wait_for_release_check", lambda: Release("9.9.9", "v9.9.9", "x", {}))
-    monkeypatch.setattr(updater, "app_running", lambda: True)
-    called = []
-    monkeypatch.setattr(updater, "download_verified", lambda *a, **k: called.append(a))
+    monkeypatch.setattr(updater, "download_verified", lambda *a, **k: tmp_path / "setup.exe")
+    monkeypatch.setattr(updater, "wait_for_app_exit", lambda: False)
+    launched = []
+    monkeypatch.setattr(updater.subprocess, "Popen", lambda *a, **k: launched.append(a))
     assert updater.run_update_service() == 0
-    assert called == [], "never close a running BrickMote at boot"
+    assert launched == [], "never close a running BrickMote that did not ask for it"
+
+
+def test_service_installs_once_the_app_has_closed(monkeypatch, tmp_path):
+    monkeypatch.setattr(updater, "install_kind", lambda: "windows-installed")
+    monkeypatch.setattr(updater.sys, "executable", str(tmp_path / "BrickMote.exe"))
+    monkeypatch.setattr(updater, "_wait_for_release_check", lambda: Release("9.9.9", "v9.9.9", "x", {}))
+    monkeypatch.setattr(updater, "download_verified", lambda *a, **k: tmp_path / "setup.exe")
+    monkeypatch.setattr(updater, "wait_for_app_exit", lambda: True)
+    launched = []
+    monkeypatch.setattr(updater.subprocess, "Popen", lambda args, **k: launched.append(args))
+    assert updater.run_update_service() == 0
+    assert launched and launched[0][0].endswith("setup.exe") and "/VERYSILENT" in launched[0]
+
+
+def test_wait_for_app_exit():
+    states = iter([True, True, False])
+    assert updater.wait_for_app_exit(timeout=5, step=0.01, running=lambda: next(states))
+    assert not updater.wait_for_app_exit(timeout=0.05, step=0.01, running=lambda: True)
+
+
+def test_relauncher_waits_for_the_new_version_and_is_injection_proof():
+    script = updater.relauncher_script("1.2.3", r"C:\Program Files\Brick'Mote\BrickMote.exe", minimized=True)
+    assert "-eq '1.2.3'" in script and "'--minimized'" in script
+    assert "Brick''Mote" in script  # quotes escaped
+    assert updater.INNO_APP_ID in script
+    for bad in ("1.2.3'; Remove-Item C:\\ -Recurse; '", "latest", ""):
+        with pytest.raises(UpdateError):
+            updater.relauncher_script(bad, "x.exe", minimized=False)
+
+
+def test_request_service_update(monkeypatch):
+    class Result:
+        def __init__(self, rc):
+            self.returncode = rc
+
+    calls = []
+    monkeypatch.setattr(updater.subprocess, "run", lambda args, **k: calls.append(args) or Result(0))
+    assert updater.request_service_update()
+    assert calls[0][:4] == ["schtasks", "/Run", "/TN", updater.TASK_NAME]
+    monkeypatch.setattr(updater.subprocess, "run", lambda args, **k: Result(1))  # access denied (old install)
+    assert not updater.request_service_update()
+
+    def boom(*a, **k):
+        raise OSError("schtasks absent")
+
+    monkeypatch.setattr(updater.subprocess, "run", boom)
+    assert not updater.request_service_update()
 
 
 def test_service_retries_until_the_network_is_up(monkeypatch):
@@ -215,3 +263,8 @@ def test_service_retries_until_the_network_is_up(monkeypatch):
     monkeypatch.setattr(updater, "check_for_update", flaky)
     assert updater._wait_for_release_check(attempts=5, delay=0) is None
     assert len(calls) == 3
+
+
+def test_relauncher_without_version_only_waits_for_the_installer():
+    script = updater.relauncher_script(None, "C:\\BrickMote.exe", minimized=False)
+    assert "-eq '" not in script and "if(-not $setup)" in script and "@()" in script

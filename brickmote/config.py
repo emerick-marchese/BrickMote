@@ -70,6 +70,7 @@ class Settings:
     theme: str = "dark"  # dark | light
     check_updates: bool = True  # look for a new version at start-up
     skipped_update: str = ""  # "don't show again" for this version
+    update_attempts: dict = field(default_factory=dict)  # version -> [times]: no install loop
     device_view: str = "large"  # large | small | list
     save_thumbnails: bool = True  # small preview of the remote screen in "Récents"
     # Wake-on-LAN: send this PC's MAC address to authorised viewers so they can wake it
@@ -117,6 +118,8 @@ class Settings:
             self.wol_box_port = 9
         if not isinstance(self.wol_box_address, str):
             self.wol_box_address = ""
+        if not isinstance(self.update_attempts, dict):
+            self.update_attempts = {}
         if self.device_view not in ("large", "small", "list"):
             self.device_view = "large"
         self.fps = max(1, min(60, int(self.fps))) if isinstance(self.fps, int) else 20

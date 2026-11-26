@@ -67,6 +67,10 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""B
 ; Automatic updates: a SYSTEM task checks for a signed new version at every boot
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""BrickMote\Update"""; Flags: runhidden; Check: not WizardIsTaskSelected('autoupdate')
 Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /RU SYSTEM /RL HIGHEST /SC ONSTART /DELAY 0000:20 /TN ""BrickMote\Update"" /TR ""\""{app}\BrickMote.exe\"" --update-service"""; Flags: runhidden; Tasks: autoupdate
+; the application starts this task itself when an update is available (mandatory
+; updates, no UAC prompt): signed-in users may run it, only admins/SYSTEM may change it.
+; The service only ever installs a newer release whose signature is valid.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""$s=New-Object -ComObject Schedule.Service;$s.Connect();$f=$s.GetFolder('\BrickMote');$f.SetSecurityDescriptor('D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;GR;;;AU)',0);$f.GetTask('Update').SetSecurityDescriptor('D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;AU)',0)"""; Flags: runhidden; Tasks: autoupdate
 Filename: "{app}\BrickMote.exe"; Description: "{cm:LaunchProgram,BrickMote}"; Flags: nowait postinstall skipifsilent
 ; After an update started from the application ("Installer maintenant"): restart it
 Filename: "{app}\BrickMote.exe"; Flags: nowait runasoriginaluser; Check: RelaunchRequested

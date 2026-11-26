@@ -58,6 +58,17 @@ def main(argv=None) -> int:
     from ..config import Settings
     from .style import app_icon, apply_font, apply_theme
 
+    from .. import updater
+
+    if updater.install_kind() == "windows-installed" and updater.setup_running():
+        # an update is being installed (started with Windows at the same
+        # time): come back once it is done rather than be closed by it
+        try:
+            updater.spawn_relauncher(None, minimized=bool(args.minimized))
+            return 0
+        except Exception:  # noqa: BLE001 - start normally
+            pass
+
     app = QApplication(sys.argv if argv is None else ["brickmote", *argv])
     app.setApplicationName("BrickMote")
     app.setOrganizationName("BrickMote")

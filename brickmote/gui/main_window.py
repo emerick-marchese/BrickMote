@@ -153,11 +153,13 @@ class MainWindow(QMainWindow):
         self._presence_timer = QTimer(self, interval=20_000, timeout=self.poll_presence)
         self._presence_timer.start()
         QTimer.singleShot(2000, self.poll_presence)
-        self._update_timer = QTimer(self, interval=12 * 3600 * 1000, timeout=self.check_updates)
+        self._update_timer = QTimer(self, interval=3 * 3600 * 1000, timeout=self.check_updates)
         self._update_timer.start()
         self._present_update = False  # show the update dialog when the running check finds one
         self._update_check_running = False
-        self._last_opened = 0.0
+        self._opening_handled = False  # the update check of this opening was done
+        self._mandatory_pending = None  # update waiting for the sessions to end
+        self._mandatory_timer = QTimer(self, interval=60_000, timeout=self._retry_mandatory)
         self._update_retry = 0
         self._last_update_check = 0.0
         self.update_check_failed.connect(self._retry_update_check)
@@ -480,7 +482,7 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
         self.poll_presence()
-        QTimer.singleShot(400, lambda: self._on_window_opened(force=True))  # also when it was already open
+        QTimer.singleShot(400, lambda: self._on_window_opened(force=True))
 
     # =============================================================== status
     def refresh_identity(self):
@@ -780,16 +782,15 @@ class MainWindow(QMainWindow):
 
     def _on_window_opened(self, force: bool = False):
         """Each time BrickMote is opened (launch, tray, desktop shortcut,
-        restored from the taskbar): look for an update and present it."""
+        restored from the taskbar): look for an update."""
         if not force and (not self.isVisible() or self.isMinimized()):
             return  # e.g. started minimized with Windows: nobody is looking yet
-        now = time.monotonic()
-        if now - self._last_opened < 3:
-            return  # show + state change events of the same opening
-        self._last_opened = now
+        if self._opening_handled:
+            return  # same opening (show, maximize, dialog closed...): never ask twice
+        self._opening_handled = True
         self._present_update = True
-        if self._release is not None and now - self._last_update_check < 60:
-            self._present_now()  # just checked: no need to ask GitHub again
+        if self._release is not None and time.monotonic() - self._last_update_check < 60:
+            self._on_update_found(self._release)  # just checked: no need to ask GitHub again
         else:
             self.check_updates()
 
@@ -809,25 +810,92 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         QTimer.singleShot(400, self._on_window_opened)
 
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        if not self.isVisible():
+            self._opening_handled = False  # the next opening is a new one
+
     def changeEvent(self, event):
         super().changeEvent(event)
-        if event.type() == QEvent.WindowStateChange and not self.isMinimized() and self.isVisible():
-            QTimer.singleShot(400, self._on_window_opened)
+        if event.type() == QEvent.WindowStateChange:
+            if self.isMinimized():
+                self._opening_handled = False
+            elif self.isVisible():
+                QTimer.singleShot(400, self._on_window_opened)
+
+    def _busy(self) -> bool:
+        """Someone is connected (to or from this computer): do not restart now."""
+        return bool(self.core.host_sessions or self.core.viewer_sessions or self._viewers)
+
+    def _mandatory_update(self, release) -> bool:
+        """Installed Windows version: updates are mandatory and installed right
+        away, without any question, then BrickMote restarts by itself.
+        Returns False when it cannot be done automatically."""
+        if updater.install_kind() != "windows-installed":
+            return False
+        if self._busy():
+            self._mandatory_pending = release
+            if not self._mandatory_timer.isActive():
+                self._mandatory_timer.start()
+            self.update_text.setText(
+                f"<b>BrickMote {release.version} est disponible.</b> Elle s'installera automatiquement "
+                "dès la fin des sessions en cours."
+            )
+            return True
+        self._mandatory_pending = None
+        self._mandatory_timer.stop()
+        now = time.time()
+        attempts = [t for t in self.core.settings.update_attempts.get(release.version, []) if now - t < 6 * 3600]
+        if len(attempts) >= 2:
+            # tried twice already without success: do not loop, offer it instead
+            logging.getLogger(__name__).warning("mise à jour %s : installation automatique abandonnée", release.version)
+            return False
+        self.core.settings.update_attempts = {release.version: attempts + [now]}
+        try:
+            self.core.save_settings()
+        except OSError:
+            pass
+        shown = self.isVisible() and not self.isMinimized()
+        message = f"Mise à jour obligatoire vers BrickMote {release.version} : redémarrage automatique dans un instant…"
+        if updater.request_service_update():
+            try:
+                updater.spawn_relauncher(release.version, minimized=not shown)
+            except Exception as exc:  # noqa: BLE001 - the update service still installs it
+                logging.getLogger(__name__).warning("relance après mise à jour impossible : %s", exc)
+            self.update_text.setText(f"<b>{message}</b>")
+            self.update_banner.show()
+            self.btn_update.setEnabled(False)
+            if shown:
+                self.show_toast(message)
+            elif self.tray:
+                self.tray.showMessage("BrickMote", message)
+            QTimer.singleShot(2500, self.quit)  # the service waits for BrickMote to close
+            return True
+        if shown:
+            # installed before 1.0.9: the update task cannot be started from
+            # here yet; Windows asks for confirmation once (UAC)
+            self.show_toast(message)
+            self._update_clicked()
+            return True
+        return False
+
+    def _retry_mandatory(self):
+        if self._mandatory_pending is not None and not self._busy():
+            self._mandatory_update(self._mandatory_pending)
 
     def _on_update_found(self, release):
         self._release = release
         kind = updater.install_kind()
         if kind == "windows-installed":
-            self.update_text.setText(
-                f"<b>BrickMote {release.version} est disponible.</b> Elle s'installera automatiquement "
-                "au prochain démarrage du PC, ou dès maintenant si vous le souhaitez."
-            )
+            self.update_text.setText(f"<b>BrickMote {release.version} est disponible.</b>")
             self.btn_update.setText("Installer maintenant")
         else:
             self.update_text.setText(f"<b>BrickMote {release.version} est disponible.</b>")
             self.btn_update.setText("Télécharger")
         self.update_banner.show()
-        if release.version == self.core.settings.skipped_update:
+        if self._mandatory_update(release):
+            return
+        if release.version == self.core.settings.skipped_update and kind != "windows-installed":
             return
         if self.isVisible():
             if self._present_update:
@@ -948,7 +1016,7 @@ class MainWindow(QMainWindow):
                 objectName="DeviceId",
             )
         )
-        text.addWidget(QLabel(f"{method} · code de sécurité {session.sas}", objectName="DeviceTag"))
+        text.addWidget(QLabel(method, objectName="DeviceTag"))
         row.addLayout(text, 1)
         pill = QLabel("● En cours", objectName="PillOk")
         row.addWidget(pill, alignment=Qt.AlignVCenter)

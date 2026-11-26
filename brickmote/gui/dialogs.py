@@ -99,18 +99,7 @@ class IncomingDialog(QDialog):
         lay.addLayout(top)
         lay.addWidget(_label(f"Empreinte : {peer.fingerprint}", "Small", True))
 
-        sas_box = QGroupBox("Code de sécurité de la session")
-        sl = QVBoxLayout(sas_box)
-        sl.addWidget(_label(req.sas, "Sas"))
-        sl.addWidget(
-            _label(
-                "Si votre correspondant vous a contacté, vérifiez qu'il voit exactement le même code. "
-                "N'acceptez jamais une demande que vous n'attendiez pas.",
-                "Small",
-                True,
-            )
-        )
-        lay.addWidget(sas_box)
+        lay.addWidget(_label("N'acceptez jamais une demande que vous n'attendiez pas.", "Small", True))
 
         perm_box = QGroupBox("Autorisations accordées")
         pl = QVBoxLayout(perm_box)
@@ -236,7 +225,6 @@ class HostSessionPanel(QWidget):
         lay.addWidget(_label(f"{_esc(peer.name)} · ID {format_id(peer.device_id)}", "Muted"))
         method = "mot de passe (sans surveillance)" if session.method == "password" else "acceptée manuellement"
         lay.addWidget(_label(f"Accès : {method}", "Small"))
-        lay.addWidget(_label(f"Code de sécurité : <b>{session.sas}</b>", "Small"))
         self.checks = {}
         for key, text in PERM_LABELS.items():
             cb = QCheckBox(text)

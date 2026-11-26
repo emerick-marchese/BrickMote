@@ -287,6 +287,97 @@ def app_running() -> bool:
     return False
 
 
+def wait_for_app_exit(timeout: float = 120.0, step: float = 2.0, running=None) -> bool:
+    """The application asked for its own update and is closing: give it time."""
+    import time as _time
+
+    running = running or app_running
+    deadline = _time.monotonic() + timeout
+    while running():
+        if _time.monotonic() >= deadline:
+            return False
+        _time.sleep(step)
+    return True
+
+
+INNO_APP_ID = "{8F3C2A61-6B0E-4C7B-9C52-3E1F0B7D2A94}_is1"
+_NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW
+
+
+def request_service_update() -> bool:
+    """Ask the SYSTEM update task to install now (no UAC prompt). Works when
+    the installer allowed users to start it (1.0.9 and later)."""
+    try:
+        result = subprocess.run(
+            ["schtasks", "/Run", "/TN", TASK_NAME],
+            capture_output=True,
+            timeout=20,
+            creationflags=_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.info("update task not started: %s", exc)
+        return False
+    if result.returncode != 0:
+        log.info("update task refused (%s)", result.returncode)
+    return result.returncode == 0
+
+
+def setup_running() -> bool:
+    """Is a BrickMote installer running (update being installed)?"""
+    try:
+        import psutil
+    except ImportError:
+        return False
+    for proc in psutil.process_iter(["name"]):
+        try:
+            if (proc.info["name"] or "").lower().startswith("brickmote-setup"):
+                return True
+        except psutil.Error:
+            continue
+    return False
+
+
+def relauncher_script(version: Optional[str], exe: str, minimized: bool, timeout_min: int = 15) -> str:
+    """PowerShell run hidden, as the user: waits until the update service has
+    installed ``version``, then starts BrickMote again (also after a timeout,
+    so the computer never stays without BrickMote)."""
+    if version is not None and not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise UpdateError("version invalide")
+    installed = f"$v -eq '{version}' -and " if version else ""
+    exe_ps = exe.replace("'", "''")
+    args = "'--minimized'" if minimized else "@()"
+    keys = ", ".join(
+        f"'{root}\\SOFTWARE\\{view}Microsoft\\Windows\\CurrentVersion\\Uninstall\\{INNO_APP_ID}'"
+        for root in ("HKLM:",)
+        for view in ("", "WOW6432Node\\")
+    )
+    return (
+        "$ErrorActionPreference='SilentlyContinue';"
+        f"$deadline=(Get-Date).AddMinutes({int(timeout_min)});"
+        "Start-Sleep -Seconds 8;"
+        "while((Get-Date) -lt $deadline){"
+        f"$v=($({keys}) | ForEach-Object {{ (Get-ItemProperty -Path $_).DisplayVersion }} | Where-Object {{ $_ }} | Select-Object -First 1);"
+        "$setup=Get-Process -Name 'BrickMote-Setup*';"
+        f"if({installed}-not $setup){{break}};"
+        "Start-Sleep -Seconds 3};"
+        "Start-Sleep -Seconds 2;"
+        f"if(-not (Get-Process -Name 'BrickMote' | Where-Object {{ $_.SessionId -eq (Get-Process -Id $PID).SessionId }})){{"
+        f"Start-Process -FilePath '{exe_ps}' -ArgumentList {args}}}"
+    )
+
+
+def spawn_relauncher(version: Optional[str], minimized: bool) -> None:
+    exe = str(Path(sys.executable).resolve())
+    script = relauncher_script(version, exe, minimized)
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode()
+    subprocess.Popen(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
+         "-EncodedCommand", encoded],
+        creationflags=_NO_WINDOW | getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        close_fds=True,
+    )
+
+
 def _wait_for_release_check(attempts: int = 12, delay: float = 15.0) -> Optional[Release]:
     """At boot the network may not be up yet: retry for a few minutes."""
     import time as _time
@@ -321,14 +412,15 @@ def run_update_service() -> int:
         if release is None:
             log.info("BrickMote %s est à jour", __version__)
             return 0
-        if app_running():
-            # Installing now would close BrickMote without restarting it, leaving
-            # this computer unreachable: retry at the next boot instead (the
-            # "Installer maintenant" banner is offered in the application).
-            log.info("BrickMote est déjà ouvert : mise à jour %s reportée", release.version)
-            return 0
         name = asset_name(release.version, "windows-installed")
         installer = download_verified(release, name, updates)
+        if not wait_for_app_exit():
+            # BrickMote is open and did not ask for this update: installing now
+            # would close it without restarting it, leaving this computer
+            # unreachable. The application installs it itself when it starts
+            # (mandatory update), which closes it and restarts it afterwards.
+            log.info("BrickMote est déjà ouvert : mise à jour %s reportée", release.version)
+            return 0
         log.info("installation de la version %s (signature et empreinte vérifiées)", release.version)
         subprocess.Popen(
             [str(installer), *_windows_installer_args(relaunch=False), f"/LOG={updates / 'install.log'}"],
