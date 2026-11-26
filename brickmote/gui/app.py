@@ -47,7 +47,7 @@ def main(argv=None) -> int:
     )
     _windows_dpi_awareness()
 
-    from PySide6.QtCore import QLockFile
+    from PySide6.QtCore import QLockFile, Qt
     from PySide6.QtNetwork import QLocalServer, QLocalSocket
     from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -94,9 +94,10 @@ def main(argv=None) -> int:
     if args.minimized and window.tray is not None:
         window.tray.showMessage("BrickMote", f"BrickMote est actif : ID {core.identity.display_id}")
     elif args.minimized:
-        window.showMinimized()
-    else:
+        window.setWindowState(Qt.WindowMaximized | Qt.WindowMinimized)  # restored full screen
         window.show()
+    else:
+        window.showMaximized()
 
     server = QLocalServer()
     server.setSocketOptions(QLocalServer.UserAccessOption)  # only this user's processes

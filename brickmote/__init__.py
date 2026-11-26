@@ -1,4 +1,4 @@
 """BrickMote - logiciel de bureau à distance sécurisé (chiffrement de bout en bout)."""
 
-__version__ = "1.0.6"
+__version__ = "1.0.7"
 APP_NAME = "BrickMote"

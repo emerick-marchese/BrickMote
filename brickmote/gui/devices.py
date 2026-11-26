@@ -74,7 +74,7 @@ class Preview(QWidget):
             icon_pix = pixmap("devices", "#6B7280", size, 1.5)
             p.drawPixmap((r.width() - size) // 2, (r.height() - size) // 2, icon_pix)
         if self.status is not None:
-            color = QColor(STATUS_ON if self.status else STATUS_OFF)
+            color = QColor(status_color(self.status))
             if self.compact:
                 # just the dot, top-left corner
                 p.setRenderHint(QPainter.Antialiasing)
@@ -100,12 +100,26 @@ class Preview(QWidget):
 
 STATUS_ON = "#22C55E"
 STATUS_OFF = "#EF4444"
+STATUS_UNKNOWN = "#8B929C"
+UNKNOWN = "unknown"  # asked, but nobody could tell (no relay, or a relay to update)
+UNKNOWN_TIP = (
+    "État inconnu : le serveur relais n'a pas répondu à la demande de disponibilité. "
+    "S'il vient d'être mis à jour, redémarrez-le ; sinon mettez-le à jour."
+)
 
 
-def status_text(status: Optional[bool], lan: bool = False) -> str:
+def status_color(status) -> str:
+    if status == UNKNOWN:
+        return STATUS_UNKNOWN
+    return STATUS_ON if status else STATUS_OFF
+
+
+def status_text(status, lan: bool = False) -> str:
     if status is None:
         return ""
-    if status:
+    if status == UNKNOWN:
+        return "État inconnu"
+    if status is True:
         return "Disponible · réseau local" if lan else "Disponible"
     return "Indisponible"
 
@@ -123,7 +137,10 @@ class _DeviceItem(QFrame):
         self.device = device
         self.setAttribute(Qt.WA_Hover, True)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip(f"Se connecter à {device['title']} ({format_id(device['id'])})")
+        tip = f"Se connecter à {device['title']} ({format_id(device['id'])})"
+        if device.get("status") == UNKNOWN:
+            tip += "\n\n" + UNKNOWN_TIP
+        self.setToolTip(tip)
 
     def _star_button(self) -> Optional[QToolButton]:
         if not self.device["known"]:
@@ -231,7 +248,9 @@ class DeviceRow(_DeviceItem):
         state = True if device["online"] else device.get("status")
         text = status_text(state, device["online"])
         status = QLabel(f"● {text}" if text else "", objectName="TileId")
-        status.setStyleSheet(f"color: {STATUS_ON if state else STATUS_OFF};")
+        status.setStyleSheet(f"color: {status_color(state)};")
+        if state == UNKNOWN:
+            status.setToolTip(UNKNOWN_TIP)
         status.setMinimumWidth(110)
         lay.addWidget(status)
         star = self._star_button()
@@ -245,6 +264,14 @@ class DeviceRow(_DeviceItem):
         if wake is not None:
             lay.addWidget(wake)
         lay.addWidget(self._menu_button())
+
+
+def _presence_state(presence: dict, dev: str):
+    """True / False, UNKNOWN when asked without answer, None before asking."""
+    if dev not in presence:
+        return None
+    value = presence[dev]
+    return UNKNOWN if value is None else value
 
 
 class DeviceBrowser(QWidget):
@@ -369,7 +396,7 @@ class DeviceBrowser(QWidget):
                 "title": title,
                 "subtitle": subtitle,
                 "online": online,
-                "status": True if online else self._presence.get(dev),
+                "status": True if online else _presence_state(self._presence, dev),
                 "known": dev in known,
                 "favorite": bool(entry.get("favorite")),
                 "wol": bool(isinstance(entry.get("wol"), dict) and entry["wol"].get("mac")),

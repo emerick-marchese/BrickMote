@@ -472,7 +472,10 @@ class MainWindow(QMainWindow):
         self.tray.show()
 
     def _show(self):
-        self.showNormal()
+        if self.isHidden() or self.isMinimized():
+            self.showMaximized()  # BrickMote opens full screen
+        else:
+            self.show()
         self.raise_()
         self.activateWindow()
         self.poll_presence()
