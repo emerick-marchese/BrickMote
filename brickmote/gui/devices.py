@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from PySide6.QtCore import QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPixmap
+from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -34,10 +34,11 @@ ThumbFn = Callable[[str], Optional[QPixmap]]
 class Preview(QWidget):
     """Remote screen preview (cover-cropped), or a neutral placeholder."""
 
-    def __init__(self, thumb: Optional[QPixmap], online: bool, compact: bool = False):
+    def __init__(self, thumb: Optional[QPixmap], online: bool, compact: bool = False, status: Optional[bool] = None):
         super().__init__()
         self.thumb = thumb
-        self.online = online
+        self.online = online  # seen on the local network
+        self.status = True if online else status  # available? (None: unknown)
         self.compact = compact
         self._cache: Optional[QPixmap] = None
 
@@ -72,21 +73,41 @@ class Preview(QWidget):
             size = 26 if self.compact else 44
             icon_pix = pixmap("devices", "#6B7280", size, 1.5)
             p.drawPixmap((r.width() - size) // 2, (r.height() - size) // 2, icon_pix)
-        if self.online and not self.compact:
-            font = QFont()
-            font.setFamilies(FONT_FAMILIES)
-            font.setPixelSize(11)
-            font.setBold(True)
-            p.setFont(font)
-            label = "Réseau local"
-            w = p.fontMetrics().horizontalAdvance(label) + 26
-            box = QRectF(8, r.height() - 28, w, 20)
-            p.fillRect(box, QColor(0, 0, 0, 165))
-            p.setPen(QColor(C["OK"]))
-            p.drawText(QRectF(box.x() + 7, box.y(), 12, box.height()), Qt.AlignVCenter, "●")
-            p.setPen(QColor("white"))
-            p.drawText(QRectF(box.x() + 19, box.y(), w - 19, box.height()), Qt.AlignVCenter, label)
+        if self.status is not None:
+            color = QColor(STATUS_ON if self.status else STATUS_OFF)
+            if self.compact:
+                # just the dot, top-left corner
+                p.setRenderHint(QPainter.Antialiasing)
+                p.setPen(QPen(QColor(0, 0, 0, 170), 2))
+                p.setBrush(color)
+                p.drawEllipse(QRectF(7, 7, 11, 11))
+            else:
+                font = QFont()
+                font.setFamilies(FONT_FAMILIES)
+                font.setPixelSize(11)
+                font.setBold(True)
+                p.setFont(font)
+                label = status_text(self.status, self.online)
+                w = p.fontMetrics().horizontalAdvance(label) + 26
+                box = QRectF(8, r.height() - 28, w, 20)
+                p.fillRect(box, QColor(0, 0, 0, 165))
+                p.setPen(color)
+                p.drawText(QRectF(box.x() + 7, box.y(), 12, box.height()), Qt.AlignVCenter, "●")
+                p.setPen(QColor("white"))
+                p.drawText(QRectF(box.x() + 19, box.y(), w - 19, box.height()), Qt.AlignVCenter, label)
         p.end()
+
+
+STATUS_ON = "#22C55E"
+STATUS_OFF = "#EF4444"
+
+
+def status_text(status: Optional[bool], lan: bool = False) -> str:
+    if status is None:
+        return ""
+    if status:
+        return "Disponible · réseau local" if lan else "Disponible"
+    return "Indisponible"
 
 
 class _DeviceItem(QFrame):
@@ -156,7 +177,7 @@ class DeviceTile(_DeviceItem):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(1, 1, 1, 1)
         lay.setSpacing(0)
-        self.preview = Preview(thumb, device["online"], compact)
+        self.preview = Preview(thumb, device["online"], compact, device.get("status"))
         self.preview.setFixedHeight(preview_h)
         lay.addWidget(self.preview)
         star = self._star_button()
@@ -207,8 +228,10 @@ class DeviceRow(_DeviceItem):
         lay.addLayout(text, 3)
         seen = QLabel(device["seen"], objectName="TileId")
         lay.addWidget(seen, 2)
-        status = QLabel("● Réseau local" if device["online"] else "", objectName="TileId")
-        status.setStyleSheet(f"color: {C['OK']};")
+        state = True if device["online"] else device.get("status")
+        text = status_text(state, device["online"])
+        status = QLabel(f"● {text}" if text else "", objectName="TileId")
+        status.setStyleSheet(f"color: {STATUS_ON if state else STATUS_OFF};")
         status.setMinimumWidth(110)
         lay.addWidget(status)
         star = self._star_button()
@@ -247,6 +270,7 @@ class DeviceBrowser(QWidget):
         self.tab = "recent"
         self._known: dict = {}
         self._lan: dict = {}
+        self._presence: dict = {}
         self._thumb: ThumbFn = lambda _id: None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -312,8 +336,11 @@ class DeviceBrowser(QWidget):
             self.view_changed.emit(view)
             self._rebuild()
 
-    def set_data(self, known: dict, lan: dict, thumb: ThumbFn, saved: Optional[set] = None) -> None:
+    def set_data(
+        self, known: dict, lan: dict, thumb: ThumbFn, saved: Optional[set] = None, presence: Optional[dict] = None
+    ) -> None:
         self._known, self._lan, self._thumb = known, lan, thumb
+        self._presence = dict(presence or {})
         self._saved = set(saved or ())
         counts = {
             "recent": len(known),
@@ -342,6 +369,7 @@ class DeviceBrowser(QWidget):
                 "title": title,
                 "subtitle": subtitle,
                 "online": online,
+                "status": True if online else self._presence.get(dev),
                 "known": dev in known,
                 "favorite": bool(entry.get("favorite")),
                 "wol": bool(isinstance(entry.get("wol"), dict) and entry["wol"].get("mac")),

@@ -37,6 +37,7 @@ REGISTER_CTX = b"BrickMote relay register v1\x00"
 JOIN_CTX = b"BrickMote relay join v1\x00"
 
 PAIR_TIMEOUT = 30.0
+MAX_PRESENCE_IDS = 128
 FIRST_MESSAGE_TIMEOUT = 10.0
 CONTROL_IDLE_TIMEOUT = 90.0
 PIPE_IDLE_TIMEOUT = 300.0
@@ -120,6 +121,7 @@ class RelayServer:
         self.ip_limiter = RateLimiter(limit=120, window=60)
         self.new_key_limiter = RateLimiter(limit=20, window=3600)
         self.connect_limiter = RateLimiter(limit=30, window=60)
+        self.presence_limiter = RateLimiter(limit=20, window=60)
         self.servers: list[asyncio.base_events.Server] = []
 
     async def start(self, host: str, ports: list[int], ssl_ctx) -> list[int]:
@@ -200,6 +202,8 @@ class RelayServer:
                     await client.send({"t": "pong"})
                 elif kind == "connect":
                     await self._on_connect(client, req)
+                elif kind == "presence":
+                    await self._on_presence(client, req)
                 elif kind == "decline":
                     session = self.pending.get(req.get("token"))
                     if session and session.host_id == device_id:
@@ -237,6 +241,20 @@ class RelayServer:
         await host.send({"t": "incoming", "token": token, "from": viewer.device_id, "pub": b64e(viewer.pub)})
         await viewer.send({"t": "route", "rid": rid, "token": token, "target": target, "pub": b64e(host.pub)})
         log.info("route %s -> %s", viewer.device_id, target)
+
+    async def _on_presence(self, client: ControlClient, req: dict) -> None:
+        """Which of these devices are connected right now (green/red dots in
+        the viewer's device list)? Bounded and rate limited."""
+        rid = req.get("rid") if isinstance(req.get("rid"), int) else 0
+        ids = req.get("ids")
+        if not isinstance(ids, list):
+            await client.send({"t": "error", "rid": rid, "code": "bad_request"})
+            return
+        if not self.presence_limiter.allow(client.device_id):
+            await client.send({"t": "error", "rid": rid, "code": "rate_limited"})
+            return
+        wanted = {i for i in ids[:MAX_PRESENCE_IDS] if isinstance(i, str) and len(i) == 9 and i.isdigit()}
+        await client.send({"t": "presence", "rid": rid, "online": sorted(i for i in wanted if i in self.online)})
 
     def _expire(self, token: str) -> None:
         session = self.pending.get(token)

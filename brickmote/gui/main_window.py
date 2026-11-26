@@ -13,7 +13,7 @@ import logging
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QBuffer, QEvent, QIODevice, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -112,6 +112,8 @@ def _scroll_page(title: str, subtitle: str, header: bool = True) -> tuple[QScrol
 class MainWindow(QMainWindow):
     wake_result = Signal(str, bool)  # message, success (emitted from the network thread)
     update_found = Signal(object)  # updater.Release
+    presence_found = Signal(object)  # {device id: True | False | None}
+    update_check_failed = Signal()
     update_installer_ready = Signal(object)  # Path of a verified installer
     update_failed = Signal(str)
 
@@ -127,6 +129,7 @@ class MainWindow(QMainWindow):
         self._session_started: dict[int, float] = {}
         self._viewers: list[ViewerWindow] = []
         self._lan_peers: dict = {}
+        self._presence: dict = {}  # device id -> available? (relay / local network)
         self._thumb_cache: dict = {}
         self._last_remote_clip: Optional[str] = None
         self._quitting = False
@@ -144,9 +147,18 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1500, self.refresh_identity)
         self._clock = QTimer(self, interval=30_000, timeout=self._refresh_devices)
         self._clock.start()
+        # green / red dots on the devices: asked to the relay while the window is shown
+        self._presence_busy = False
+        self.presence_found.connect(self._on_presence)
+        self._presence_timer = QTimer(self, interval=20_000, timeout=self.poll_presence)
+        self._presence_timer.start()
+        QTimer.singleShot(2000, self.poll_presence)
         self._update_timer = QTimer(self, interval=12 * 3600 * 1000, timeout=self.check_updates)
         self._update_timer.start()
-        self._startup_check = True
+        self._update_dialogs_shown: set[str] = set()  # versions already presented this run
+        self._update_retry = 0
+        self._last_update_check = time.monotonic()  # the first check is scheduled below
+        self.update_check_failed.connect(self._retry_update_check)
         QTimer.singleShot(3000, self.check_updates)
 
     # ================================================================ layout
@@ -461,6 +473,7 @@ class MainWindow(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+        self.poll_presence()
 
     # =============================================================== status
     def refresh_identity(self):
@@ -519,6 +532,7 @@ class MainWindow(QMainWindow):
 
     def _on_relay_status(self, state: str, detail: str):
         if state == "online":
+            QTimer.singleShot(500, self.poll_presence)
             where = "" if self.core.relay_masked else f" ({detail})"
             self.row_relay.set("En ligne", "ok", f"Joignable par ID depuis Internet{where}")
         elif state == "connecting":
@@ -541,7 +555,31 @@ class MainWindow(QMainWindow):
 
     def _refresh_devices(self):
         known = {k: v for k, v in self.core.known_hosts.entries().items() if isinstance(v, dict)}
-        self.browser.set_data(known, dict(self._lan_peers), self._thumbnail, self.core.saved_passwords.devices())
+        self.browser.set_data(
+            known, dict(self._lan_peers), self._thumbnail, self.core.saved_passwords.devices(), dict(self._presence)
+        )
+
+    def poll_presence(self):
+        if self._presence_busy or not self.isVisible() or self.isMinimized():
+            return  # nobody is looking: no need to ask the relay
+        ids = [k for k, v in self.core.known_hosts.entries().items() if isinstance(v, dict)]
+        if not ids:
+            return
+        self._presence_busy = True
+
+        def done(fut):
+            self._presence_busy = False
+            try:
+                self.presence_found.emit(fut.result())
+            except Exception as exc:  # noqa: BLE001
+                logging.getLogger(__name__).info("presence check failed: %s", exc)
+
+        self.core_thread.submit(self.core.presence(ids)).add_done_callback(done)
+
+    def _on_presence(self, presence: dict):
+        if presence != self._presence:
+            self._presence = presence
+            self._refresh_devices()
 
     # ----------------------------------------------------- thumbnails
     def _thumb_path(self, device_id: str):
@@ -710,18 +748,51 @@ class MainWindow(QMainWindow):
         def done(fut):
             try:
                 release = fut.result()
-            except Exception as exc:  # noqa: BLE001 - offline, GitHub down...: try again later
+            except Exception as exc:  # noqa: BLE001 - offline, GitHub down...: try again soon
                 logging.getLogger(__name__).info("update check failed: %s", exc)
+                self.update_check_failed.emit()
                 return
+            self._update_retry = 0
+            self._last_update_check = time.monotonic()
             if release is not None:
                 self.update_found.emit(release)
 
         self.core_thread.submit(asyncio.to_thread(updater.check_for_update)).add_done_callback(done)
 
+    def _retry_update_check(self):
+        # at boot the network is often not ready yet: retry quickly, then less often
+        delay = min(600, 30 * 2 ** self._update_retry)
+        self._update_retry += 1
+        QTimer.singleShot(delay * 1000, self.check_updates)
+
+    def _maybe_show_update(self):
+        """The window just became visible: present a waiting update once."""
+        release = self._release
+        if (
+            release is not None
+            and release.version not in self._update_dialogs_shown
+            and release.version != self.core.settings.skipped_update
+            and self.isVisible()
+            and not self.isMinimized()
+            and QApplication.activeModalWidget() is None
+        ):
+            self._update_dialogs_shown.add(release.version)
+            self._show_update_dialog(release, updater.install_kind() == "windows-installed")
+        elif time.monotonic() - self._last_update_check > 3600:
+            self.check_updates()  # opened long after the last check: look again
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(600, self._maybe_show_update)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.WindowStateChange and not self.isMinimized() and self.isVisible():
+            QTimer.singleShot(600, self._maybe_show_update)
+
     def _on_update_found(self, release):
         self._release = release
         kind = updater.install_kind()
-        startup, self._startup_check = self._startup_check, False
         if kind == "windows-installed":
             self.update_text.setText(
                 f"<b>BrickMote {release.version} est disponible.</b> Elle s'installera automatiquement "
@@ -732,10 +803,12 @@ class MainWindow(QMainWindow):
             self.update_text.setText(f"<b>BrickMote {release.version} est disponible.</b>")
             self.btn_update.setText("Télécharger")
         self.update_banner.show()
-        if startup and release.version != self.core.settings.skipped_update:
-            if self.isVisible() and not self.isMinimized():
-                self._show_update_dialog(release, kind == "windows-installed")
-                return
+        if release.version in self._update_dialogs_shown or release.version == self.core.settings.skipped_update:
+            return
+        if self.isVisible() and not self.isMinimized():
+            self._maybe_show_update()
+            return
+        # hidden in the tray (started with Windows): the dialog waits for the window
         if self.tray:
             self.tray.showMessage("BrickMote", f"Nouvelle version disponible : {release.version}")
 

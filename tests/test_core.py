@@ -353,3 +353,47 @@ async def test_viewers_see_each_others_pointers(tmp_path):
     for c in (alice, bob, host):
         await c.stop()
     assert host.cursor_hub.members == {}
+
+
+async def test_presence_through_relay(tmp_path, relay):
+    port, fp = relay
+    conf = {"relay_mode": "custom", "relay_host": "127.0.0.1", "relay_ports": [port], "relay_fingerprint": fp}
+    host, _ = make_core(tmp_path, "host", **conf)
+    viewer, _ = make_core(tmp_path, "viewer", **conf)
+    await host.start()
+    await viewer.start()
+    await wait_online(host)
+    await wait_online(viewer)
+    absent = "123456789" if host.identity.device_id != "123456789" else "987654321"
+    status = await viewer.presence([host.identity.device_id, absent, "not-an-id"])
+    assert status == {host.identity.device_id: True, absent: False}
+    await host.stop()
+    for _ in range(50):  # the relay notices the host left
+        status = await viewer.presence([host.identity.device_id])
+        if status[host.identity.device_id] is False:
+            break
+        await asyncio.sleep(0.1)
+    assert status == {host.identity.device_id: False}
+    await viewer.stop()
+
+
+async def test_presence_unknown_without_relay(tmp_path):
+    viewer, _ = make_core(tmp_path, "viewer")
+    await viewer.start()
+    assert await viewer.presence(["123456789"]) == {"123456789": None}
+    await viewer.stop()
+
+
+async def test_presence_with_an_older_relay(tmp_path, relay, monkeypatch):
+    async def ignore(self, client, req):  # relays before 1.0.6 silently ignore the request
+        return None
+
+    monkeypatch.setattr(RelayServer, "_on_presence", ignore)
+    port, fp = relay
+    conf = {"relay_mode": "custom", "relay_host": "127.0.0.1", "relay_ports": [port], "relay_fingerprint": fp}
+    viewer, _ = make_core(tmp_path, "viewer", **conf)
+    await viewer.start()
+    await wait_online(viewer)
+    assert await viewer._relay.presence(["123456789"], timeout=0.3) is None
+    assert viewer._relay._routes == {}  # nothing left waiting
+    await viewer.stop()

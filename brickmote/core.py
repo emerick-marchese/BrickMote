@@ -266,6 +266,24 @@ class BrickMoteCore:
     def lan_peers(self) -> dict:
         return dict(self._discovery.peers) if self._discovery else {}
 
+    async def presence(self, device_ids: list[str]) -> dict[str, Optional[bool]]:
+        """Is each device available right now? True / False, or None when
+        nobody can tell (no relay, or an older relay)."""
+        ids = [d for d in dict.fromkeys(device_ids) if isinstance(d, str) and len(d) == 9 and d.isdigit()]
+        lan = self.lan_peers()
+        online = None
+        if self._relay is not None and ids:
+            online = await self._relay.presence(ids)
+        out: dict[str, Optional[bool]] = {}
+        for d in ids:
+            if d in lan:
+                out[d] = True
+            elif online is not None:
+                out[d] = d in online
+            else:
+                out[d] = None
+        return out
+
     async def _routes(self, target: str):
         """Yield (reader, writer, expected_id, expected_pub, address) candidates."""
         device_id = normalize_id(target)

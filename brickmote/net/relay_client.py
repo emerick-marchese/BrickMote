@@ -155,10 +155,10 @@ class RelayClient:
                 kind = msg.get("t")
                 if kind == "incoming":
                     self._on_incoming(msg)
-                elif kind in ("route", "error"):
+                elif kind in ("route", "presence", "error"):
                     fut = self._routes.pop(msg.get("rid"), None)
                     if fut and not fut.done():
-                        if kind == "route":
+                        if kind in ("route", "presence"):
                             fut.set_result(msg)
                         else:
                             fut.set_exception(RelayError(str(msg.get("code"))))
@@ -230,6 +230,27 @@ class RelayClient:
     async def decline(self, token: str) -> None:
         if self._writer is not None:
             await write_json(self._writer, {"t": "decline", "token": token})
+
+    async def presence(self, device_ids: list[str], timeout: float = 5.0) -> Optional[set[str]]:
+        """IDs among ``device_ids`` currently connected to the relay, or None
+        when the relay cannot tell (offline, or an older relay that does not
+        know this request)."""
+        if self._writer is None or not self.online.is_set():
+            return None
+        rid = next(self._rid)
+        fut = asyncio.get_running_loop().create_future()
+        self._routes[rid] = fut
+        try:
+            await write_json(self._writer, {"t": "presence", "ids": list(device_ids)[:128], "rid": rid})
+            msg = await asyncio.wait_for(fut, timeout)
+        except (asyncio.TimeoutError, RelayError, ConnectionError, OSError):
+            return None
+        finally:
+            self._routes.pop(rid, None)
+        online = msg.get("online")
+        if not isinstance(online, list):
+            return None
+        return {i for i in online if isinstance(i, str) and i in device_ids}
 
     async def connect_to(self, target_id: str) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, bytes]:
         """Ask the relay for a route to ``target_id``. Returns the stream and
