@@ -271,3 +271,43 @@ def test_relauncher_without_version_only_waits_for_the_installer():
     assert script.rstrip().endswith("Start-Process -FilePath 'C:\\BrickMote.exe'}")  # no empty -ArgumentList
     shown = updater.relauncher_script("1.2.3", "C:\\BrickMote.exe", minimized=False, window=True)
     assert "Windows.Forms" in shown and "ShowDialog" in shown and "Start-Process" in shown
+
+
+def test_prefetched_installer_is_used_only_if_genuine(signed, tmp_path):
+    release, server, name = signed("9.0.0", payload=b"genuine installer")
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    downloads = []
+    real_open = server.open
+
+    def counting_open(url, timeout=30):
+        downloads.append(url)
+        return real_open(url, timeout)
+
+    updater._open = counting_open
+
+    # left by the application: same bytes as signed -> used, nothing downloaded
+    (incoming / name).write_bytes(b"genuine installer")
+    path = updater.download_verified(release, name, tmp_path / "a", get=server.get, prefetched=incoming / name)
+    assert path.read_bytes() == b"genuine installer" and downloads == []
+
+    # planted by someone else (same size, other bytes): ignored, downloaded again
+    (incoming / name).write_bytes(b"evil!!! installer")
+    path = updater.download_verified(release, name, tmp_path / "b", get=server.get, prefetched=incoming / name)
+    assert path.read_bytes() == b"genuine installer" and len(downloads) == 1
+
+    # a link to another file is never followed
+    (incoming / name).unlink()
+    try:
+        (incoming / name).symlink_to(tmp_path / "a" / name)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    path = updater.download_verified(release, name, tmp_path / "c", get=server.get, prefetched=incoming / name)
+    assert len(downloads) == 2
+
+
+def test_download_reports_progress(signed, tmp_path):
+    release, server, name = signed("9.0.0", payload=b"x" * 3000)
+    seen = []
+    updater.download_verified(release, name, tmp_path, get=server.get, progress=lambda d, t: seen.append((d, t)))
+    assert seen and seen[-1] == (3000, 3000)
