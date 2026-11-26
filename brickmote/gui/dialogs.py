@@ -820,6 +820,15 @@ class SettingsDialog(QDialog):
         self.theme.setCurrentIndex(max(0, self.theme.findData(self.s.theme)))
         form.addRow("Thème", self.theme)
         form.addRow("", _label("Le changement de thème s'applique au prochain démarrage de BrickMote.", "Small", True))
+        self.local_priority = QCheckBox("Priorité à la personne devant cet ordinateur")
+        self.local_priority.setChecked(self.s.local_priority)
+        form.addRow("Contrôle à distance", self.local_priority)
+        form.addRow("", _label(
+            "Dès que la souris de ce poste bouge, les personnes connectées à distance ne peuvent plus "
+            "le contrôler ; elles reprennent la main 1,5 seconde après que la souris s'est arrêtée.",
+            "Small",
+            True,
+        ))
         self.check_updates = QCheckBox("Rechercher les nouvelles versions au démarrage")
         self.check_updates.setChecked(self.s.check_updates)
         form.addRow("Mises à jour", self.check_updates)
@@ -1076,6 +1085,7 @@ class SettingsDialog(QDialog):
         s.theme = self.theme.currentData()
         s.save_thumbnails = self.thumbs.isChecked()
         s.check_updates = self.check_updates.isChecked()
+        s.local_priority = self.local_priority.isChecked()
         s.interactive_enabled = self.interactive.isChecked()
         s.interactive_permissions = {k: cb.isChecked() for k, cb in self.inter_perms.items()}
         s.unattended_enabled = self.unattended.isChecked() and s.password_verifier() is not None

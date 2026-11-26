@@ -28,10 +28,12 @@ def test_untrusted_cursor_messages_are_filtered():
         "sys": [10, 20],
         "p": [[1, 5, 6, "Alice"], [9, 1, 1, "bad color"], [2, -1, 1, "bad x"], [3, 1, 1, 42], "junk", [4, 1, 1, "\x1b[31mEve"]],
     }
-    system, pointers = _sanitize_cursors(msg)
+    system, pointers, local = _sanitize_cursors(msg)
+    assert local is False
     assert system == (10, 20)
     assert pointers == [(1, 5, 6, "Alice"), (4, 1, 1, "[31mEve")]
-    assert _sanitize_cursors({"sys": [True, 1], "p": []}) == (None, [])
+    assert _sanitize_cursors({"sys": [True, 1], "p": [], "local": True}) == (None, [], True)
+    assert _sanitize_cursors({"p": [], "local": "yes"})[2] is False
     assert _sanitize_cursors({"p": "x"}) is None
 
 

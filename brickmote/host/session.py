@@ -13,6 +13,7 @@ from typing import Callable, Optional
 from ..crypto.handshake import HandshakeResult, sanitize_permissions
 from ..session import PeerSession, SessionEvents
 from .capture import session_locked
+from .cursors import to_abs
 from .capture import QUALITY_PRESETS, AdaptiveQuality, FrameEncoder, MSSCapture, get_profile, pack_frame, scale_for, scaled
 from .inputs import InputInjector
 
@@ -37,10 +38,12 @@ class HostSession(PeerSession):
         wol_info: Optional[dict] = None,
         direct_info: Optional[dict] = None,
         cursor_hub=None,
+        local_activity=None,
     ):
         super().__init__(result, events, downloads)
         self.wol_info = wol_info
         self.cursor_hub = cursor_hub
+        self.local_activity = local_activity  # priority to the person at the computer
         self.color: Optional[int] = None  # this viewer's pointer color (multi-user)
         self.direct_info = direct_info
         self.profile = get_profile(quality)
@@ -96,8 +99,29 @@ class HostSession(PeerSession):
         return next((m for m in self.monitors if m["index"] == self.monitor_index), None)
 
     def _point(self, msg: dict, drove: bool) -> None:
+        monitor = self.current_monitor()
         if self.cursor_hub is not None:
-            self.cursor_hub.point(self, self.current_monitor(), msg.get("x"), msg.get("y"), drove)
+            self.cursor_hub.point(self, monitor, msg.get("x"), msg.get("y"), drove)
+        x, y = msg.get("x"), msg.get("y")
+        if (
+            drove
+            and self.local_activity is not None
+            and monitor is not None
+            and isinstance(x, int)
+            and isinstance(y, int)
+            and not isinstance(x, bool)
+        ):
+            self.local_activity.injected_at(*to_abs(monitor, x, y))  # not the local mouse
+
+    def local_has_priority(self) -> bool:
+        return self.local_activity is not None and self.local_activity.active()
+
+    def release_remote_input(self) -> None:
+        """The person at the computer took over: let go of what we hold."""
+        try:
+            self._input_exec.submit(self._injector.release_all)
+        except RuntimeError:  # closing
+            pass
 
     def _close_capture(self) -> None:
         """Runs in the capture thread."""
@@ -315,6 +339,19 @@ class HostSession(PeerSession):
         elif t in ("mouse", "wheel", "key"):
             if not self.permissions.get("control"):
                 return  # view-only: silently ignore any input
+            if self.local_has_priority():
+                # the person at the computer is using the mouse: remote input
+                # waits, except releases (nothing must stay pressed)
+                action = msg.get("a")
+                if t == "mouse" and action == "up":
+                    self._inject(self._injector.mouse_button, msg.get("b"), False, None, None, droppable=False)
+                elif t == "key" and action == "up":
+                    self._inject(
+                        self._injector.key, False, msg.get("key"), msg.get("char"), droppable=False
+                    )
+                elif t == "mouse" and action == "move":
+                    self._point(msg, drove=False)  # still show where this viewer points
+                return
             if t == "mouse":
                 action = msg.get("a")
                 if action in ("move", "down", "up"):

@@ -53,6 +53,7 @@ class RemoteScreen(QWidget):
         # live pointers (the others' and the computer's own cursor), in image fractions
         self.pointers = PointerSet()
         self.live_cursors = False  # the host sends pointers separately (newer hosts)
+        self.local_priority = False  # the person at the computer is using its mouse
         self._label_font = label_font(self.font())
         self._pointer_area = QRegion()  # where pointers were last drawn
         self._glide_timer = QTimer(self, interval=8, timeout=self._glide_tick)
@@ -118,9 +119,36 @@ class RemoteScreen(QWidget):
         elif self.cursor_pos and self._show_system_cursor():
             sx = rect.width() / self.image.width()
             draw_pointer(p, rect.x() + self.cursor_pos[0] * sx, rect.y() + self.cursor_pos[1] * sx, None, None, self._label_font)
+        if self.local_priority:
+            self._paint_local_banner(p)
         if self.overlay:
             self._paint_overlay(p)
         p.end()
+
+    LOCAL_TEXT = "La personne devant l'ordinateur utilise la souris : votre contrôle reprend dès qu'elle s'arrête."
+
+    def _local_banner_rect(self) -> QRectF:
+        w = min(640.0, self.width() - 24.0)
+        return QRectF((self.width() - w) / 2, 12, w, 34)
+
+    def _paint_local_banner(self, p: QPainter):
+        box = self._local_banner_rect()
+        p.save()
+        p.fillRect(box, QColor(17, 19, 23, 235))
+        p.fillRect(QRectF(box.x(), box.y(), 4, box.height()), QColor("#F59E0B"))
+        f = p.font()
+        f.setPointSizeF(9.5)
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(QColor("white"))
+        text = p.fontMetrics().elidedText(self.LOCAL_TEXT, Qt.ElideRight, int(box.width() - 26))
+        p.drawText(box.adjusted(16, 0, -10, 0), Qt.AlignVCenter | Qt.AlignLeft | Qt.TextSingleLine, text)
+        p.restore()
+
+    def set_local_priority(self, active: bool) -> None:
+        if active != self.local_priority:
+            self.local_priority = active
+            self.update(self._local_banner_rect().toAlignedRect().adjusted(-2, -2, 2, 2))
 
     # ------------------------------------------------------------ pointers
     def _show_system_cursor(self) -> bool:
@@ -555,9 +583,10 @@ class ViewerWindow(QMainWindow):
         else:
             self.screen.setCursor(Qt.ForbiddenCursor)
 
-    def _on_cursors(self, session, system, pointers):
+    def _on_cursors(self, session, system, pointers, local=False):
         if session is self.session:
             self.screen.set_cursors(system, pointers)
+            self.screen.set_local_priority(bool(local))
 
     def _update_stats(self):
         if self.session is None:

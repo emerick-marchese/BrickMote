@@ -326,7 +326,7 @@ async def test_viewers_see_each_others_pointers(tmp_path):
     b.view_only = True
     await b.mouse("move", 32768, 16384)
     while True:
-        _, system, pointers = await a_events.wait_for("cursors")
+        _, system, pointers, _local = await a_events.wait_for("cursors")
         if pointers:
             break
     color, x, y, name = pointers[0]
@@ -337,7 +337,7 @@ async def test_viewers_see_each_others_pointers(tmp_path):
     # Alice moves the real cursor: Bob sees her colored pointer
     await a.mouse("move", 1000, 2000)
     while True:
-        _, system, pointers = await b_events.wait_for("cursors")
+        _, system, pointers, _local = await b_events.wait_for("cursors")
         if pointers and pointers[0][0] == a_info["color"]:
             break
     assert pointers[0][3] == "Alice"
@@ -345,7 +345,7 @@ async def test_viewers_see_each_others_pointers(tmp_path):
     # Bob leaves the remote screen: his pointer disappears for Alice
     await b.pointer_out()
     while True:
-        _, system, pointers = await a_events.wait_for("cursors")
+        _, system, pointers, _local = await a_events.wait_for("cursors")
         if not any(p[0] == b_info["color"] for p in pointers):
             break
     await b.close()

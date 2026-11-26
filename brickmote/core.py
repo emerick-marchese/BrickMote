@@ -21,6 +21,7 @@ from .crypto.identity import Identity
 from .host.authority import HostPolicy
 from .host.cursors import CursorHub
 from .host.inputs import InputInjector
+from .host.local_input import LocalActivity
 from .host.session import HostSession
 from .net.discovery import Discovery
 from .net.framing import close_writer, tune_socket
@@ -92,7 +93,8 @@ class BrickMoteCore:
         self._ip_limiter = RateLimiter(limit=20, window=60)
         self._pending = 0
         # everyone's pointer, shared between viewers and shown to the local user
-        self.cursor_hub = CursorHub(InputInjector, on_change=self._pointers_changed)
+        self.local_activity = LocalActivity(enabled=bool(self.settings.local_priority))
+        self.cursor_hub = CursorHub(InputInjector, on_change=self._pointers_changed, local=self.local_activity)
 
     def _pointers_changed(self, pointers: list) -> None:
         notify = getattr(self.ui, "pointers_changed", None)
@@ -110,6 +112,7 @@ class BrickMoteCore:
 
     async def apply_settings(self) -> None:
         s = self.settings
+        self.local_activity.set_enabled(bool(s.local_priority))
         # direct listener (TCP 7070)
         want_port = s.direct_port if s.direct_enabled else None
         if want_port != self._direct_port:
@@ -252,6 +255,7 @@ class BrickMoteCore:
             wol_info=wol,
             direct_info=direct,
             cursor_hub=self.cursor_hub,
+            local_activity=self.local_activity,
         )
         self.host_sessions.add(session)
         self.audit.write("session_start", peer=result.peer.device_id, ip=address, method=result.method)

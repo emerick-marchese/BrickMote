@@ -74,6 +74,8 @@ class Settings:
     save_thumbnails: bool = True  # small preview of the remote screen in "Récents"
     # Wake-on-LAN: send this PC's MAC address to authorised viewers so they can wake it
     share_wol_info: bool = True
+    # the person at the computer has priority: their mouse suspends remote input
+    local_priority: bool = True
     wol_box_address: str = ""  # public IP / DynDNS name of the box ("" = IP seen by the relay)
     wol_box_port: int = 9  # UDP port forwarded by the box to this PC / the LAN
 

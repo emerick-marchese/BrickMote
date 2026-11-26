@@ -149,7 +149,7 @@ def _sanitize_cursors(msg: dict):
         if _is_color(color) and _is_coord(x) and _is_coord(y) and isinstance(name, str):
             name = "".join(ch for ch in name if ch.isprintable()).strip()[:32] or "Utilisateur"
             pointers.append((color, x, y, name))
-    return (tuple(system) if system else None), pointers
+    return (tuple(system) if system else None), pointers, msg.get("local") is True
 
 
 def _sanitize_direct(value: object):

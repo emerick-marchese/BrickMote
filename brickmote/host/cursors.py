@@ -65,7 +65,14 @@ class Participant:
 
 
 class CursorHub:
-    def __init__(self, reader_factory: Optional[Callable] = None, on_change: Optional[Callable[[list], None]] = None):
+    def __init__(
+        self,
+        reader_factory: Optional[Callable] = None,
+        on_change: Optional[Callable[[list], None]] = None,
+        local=None,
+    ):
+        self.local = local  # LocalActivity: the person at the computer has priority
+        self._local_was_active = False
         self._reader_factory = reader_factory
         self._reader = None  # only touched from the hub's thread
         self.on_change = on_change
@@ -124,12 +131,16 @@ class CursorHub:
                     self.system = await loop.run_in_executor(self._exec, self._read_system)
                 except Exception:  # noqa: BLE001 - no display, permissions...
                     self.system = None
+                if self.local is not None:
+                    self.local.observe(self.system)  # did the person at the computer move it?
                 await self.broadcast()
                 await asyncio.sleep(max(0.004, TICK - (loop.time() - started)))
         finally:
             self._exec.shutdown(wait=False)
             self._exec = None
             self._reader = None
+            if self.local is not None:
+                self.local.reset()
             self._notify_local()
 
     def driver(self) -> Optional[Participant]:
@@ -150,14 +161,24 @@ class CursorHub:
             if n is not None:
                 others.append([p.color, n[0], n[1], p.name])
         system = None
-        if self.system is not None and self.driver() is None:
+        if self.system is not None and (self._local_was_active or self.driver() is None):
             # while a viewer drives, its colored pointer already shows where
             # the real cursor is: no second arrow on top of it
             n = to_norm(monitor, *self.system)
             system = list(n) if n else None
-        return {"t": "cursors", "sys": system, "p": others}
+        msg = {"t": "cursors", "sys": system, "p": others}
+        if self._local_was_active:
+            msg["local"] = True  # viewers: your input waits, the person at the computer is using it
+        return msg
 
     async def broadcast(self) -> None:
+        local = bool(self.local is not None and self.local.active())
+        if local and not self._local_was_active:
+            for session in list(self.members):
+                release = getattr(session, "release_remote_input", None)
+                if release is not None:
+                    release()
+        self._local_was_active = local
         for session, me in list(self.members.items()):
             if session.closed:
                 continue
