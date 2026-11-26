@@ -1,9 +1,5 @@
 """Pointer sharing: coordinates, untrusted input, smooth gliding."""
 
-import os
-
-import pytest
-
 from brickmote.host.cursors import CursorHub, clean_name, to_abs, to_norm
 from brickmote.host.inputs import COORD_MAX
 from brickmote.viewer.session import _sanitize_cursors
@@ -69,9 +65,7 @@ async def test_hub_colors_and_driver():
 
 
 def test_glide_is_smooth_and_bounded():
-    pytest.importorskip("PySide6")
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from brickmote.gui.pointers import MAX_GLIDE, PointerSet
+    from brickmote.gui.glide import MAX_GLIDE, PointerSet
 
     ps = PointerSet()
     ps.update({1: (0.0, 0.0, 1, "A")}, now=10.0)
