@@ -171,6 +171,7 @@ class HostSession(PeerSession):
         if self.wol_info:
             info["wol"] = {
                 "mac": self.wol_info.get("mac"),
+                "macs": list(self.wol_info.get("macs") or [])[:4],
                 "broadcast": self.wol_info.get("broadcast"),
                 "box": self.wol_info.get("box", ""),
                 "port": self.wol_info.get("port", 9),

@@ -270,6 +270,12 @@ class BrickMoteCore:
     def lan_peers(self) -> dict:
         return dict(self._discovery.peers) if self._discovery else {}
 
+    @property
+    def relay_outdated(self) -> bool:
+        """Connected to a relay too old to tell which devices are online."""
+        relay = self._relay
+        return relay is not None and relay.online.is_set() and "presence" not in relay.features
+
     async def presence(self, device_ids: list[str]) -> dict[str, Optional[bool]]:
         """Is each device available right now? True / False, or None when
         nobody can tell (no relay, or an older relay)."""

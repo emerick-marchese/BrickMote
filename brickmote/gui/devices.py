@@ -103,8 +103,8 @@ STATUS_OFF = "#EF4444"
 STATUS_UNKNOWN = "#8B929C"
 UNKNOWN = "unknown"  # asked, but nobody could tell (no relay, or a relay to update)
 UNKNOWN_TIP = (
-    "État inconnu : le serveur relais n'a pas répondu à la demande de disponibilité. "
-    "S'il vient d'être mis à jour, redémarrez-le ; sinon mettez-le à jour."
+    "État inconnu : le serveur relais ne donne pas la disponibilité des postes. "
+    "Il doit être mis à jour (voir « Serveur relais » dans l'état de la connexion)."
 )
 
 

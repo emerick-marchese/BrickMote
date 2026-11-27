@@ -365,6 +365,7 @@ async def test_presence_through_relay(tmp_path, relay):
     await wait_online(host)
     await wait_online(viewer)
     absent = "123456789" if host.identity.device_id != "123456789" else "987654321"
+    assert not viewer.relay_outdated and viewer._relay.server_version
     status = await viewer.presence([host.identity.device_id, absent, "not-an-id"])
     assert status == {host.identity.device_id: True, absent: False}
     await host.stop()
@@ -389,11 +390,15 @@ async def test_presence_with_an_older_relay(tmp_path, relay, monkeypatch):
         return None
 
     monkeypatch.setattr(RelayServer, "_on_presence", ignore)
+    import brickmote.server.relay as relay_mod
+
+    monkeypatch.setattr(relay_mod, "FEATURES", ())  # announces nothing, like relays before 1.0.6
     port, fp = relay
     conf = {"relay_mode": "custom", "relay_host": "127.0.0.1", "relay_ports": [port], "relay_fingerprint": fp}
     viewer, _ = make_core(tmp_path, "viewer", **conf)
     await viewer.start()
     await wait_online(viewer)
+    assert viewer.relay_outdated  # shown in "État de la connexion"
     assert await viewer._relay.presence(["123456789"], timeout=0.3) is None
     assert viewer._relay._routes == {}  # nothing left waiting
     await viewer.stop()

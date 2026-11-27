@@ -22,6 +22,7 @@ from brickmote.net.wol import (
 from .test_session import make_sessions
 
 MAC = "1C:69:7A:0B:12:EF"
+MAC2 = "AA:BB:CC:DD:EE:02"
 
 
 def test_parse_mac_formats():
@@ -69,12 +70,15 @@ def test_send_rejects_bad_input():
 def test_sanitize_wol_from_untrusted_host():
     assert sanitize_wol({"mac": "1c697a0b12ef", "broadcast": "192.168.1.255", "box": "MaBox.DDNS.net", "port": 7}) == {
         "mac": MAC,
+        "macs": [MAC],
         "broadcast": "192.168.1.255",
         "box": "mabox.ddns.net",
         "port": 7,
     }
-    evil = sanitize_wol({"mac": MAC, "broadcast": "evil.example.com", "box": "a b; rm -rf", "port": 99999})
-    assert evil == {"mac": MAC, "broadcast": "255.255.255.255", "box": "", "port": 9}
+    evil = sanitize_wol(
+        {"mac": MAC, "broadcast": "evil.example.com", "box": "a b; rm -rf", "port": 99999, "macs": ["x"] * 3 + [MAC2] + [MAC] * 40}
+    )
+    assert evil == {"mac": MAC, "macs": [MAC, MAC2], "broadcast": "255.255.255.255", "box": "", "port": 9}
     assert sanitize_wol({"mac": "<script>"}) is None
     assert sanitize_wol("nope") is None
 
@@ -96,7 +100,7 @@ async def test_host_shares_mac_with_viewer(tmp_path):
         "port": 7,
     }
     info = (await vrec.wait_for("info"))[1]
-    assert info["wol"] == {"mac": MAC, "broadcast": "192.168.1.255", "box": "mabox.ddns.net", "port": 7}
+    assert info["wol"] == {"mac": MAC, "macs": [MAC], "broadcast": "192.168.1.255", "box": "mabox.ddns.net", "port": 7}
     await viewer.close()
     await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -152,11 +156,14 @@ def test_merge_keeps_manual_settings():
     assert auto["box"] == "86.12.34.56" and auto["auto"] is True
     # the host's public IP changed: automatic settings follow it
     assert merge_wol(auto, {**learned, "box": "86.99.99.99"})["box"] == "86.99.99.99"
-    # but a configuration typed by the user is kept (only the MAC is refreshed)
+    # but a configuration typed by the user is kept, MAC included (copied from
+    # a phone app: the card BrickMote saw may be a VPN / Wi-Fi card); the
+    # computer's cards are only added as extra destinations
     manual = {**auto, "box": "mabox.ddns.net", "port": 7, "auto": False}
-    merged = merge_wol(manual, {**learned, "mac": "AA:BB:CC:DD:EE:01"})
+    merged = merge_wol(manual, {**learned, "mac": "AA:BB:CC:DD:EE:01", "macs": ["AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"]})
     assert merged["box"] == "mabox.ddns.net" and merged["port"] == 7
-    assert merged["mac"] == "AA:BB:CC:DD:EE:01"
+    assert merged["mac"] == MAC
+    assert merged["extra_macs"] == ["AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"]
 
 
 def test_public_ipv4():
@@ -186,3 +193,42 @@ def test_box_hostname_reaches_its_ipv4(monkeypatch):
     sent, errors = send_wake({"mac": MAC, "box": "localhost", "port": port, "local": False})
     assert sent and rx.recv(200) == magic_packet(MAC)
     rx.close()
+
+
+def test_wake_reaches_every_card_of_the_computer(monkeypatch):
+    import brickmote.net.wol as wol_mod
+
+    sent = []
+    monkeypatch.setattr(wol_mod, "_send", lambda packet, targets, port, repeat: (sent.append(packet[6:12]) or ["x"], []))
+    wol_mod.send_wake({"mac": MAC, "extra_macs": ["AA:BB:CC:DD:EE:01", "pas une mac"], "box": "1.2.3.4", "port": 9})
+    assert sent == [bytes.fromhex("1C697A0B12EF"), bytes.fromhex("AABBCCDDEE01")]
+
+
+def test_cards_ignore_virtual_adapters_and_prefer_the_internet_card():
+    import socket
+    from types import SimpleNamespace as NS
+
+    import brickmote.net.wol as wol_mod
+
+    link = getattr(socket, "AF_PACKET", None) or -1
+    fake = NS(
+        AF_LINK=link,
+        net_if_addrs=lambda: {
+            "VMware Network Adapter VMnet8": [NS(family=link, address="00-50-56-C0-00-08"),
+                                              NS(family=socket.AF_INET, address="192.168.155.1", broadcast=None, netmask="255.255.255.0")],
+            "Radmin VPN": [NS(family=link, address="02-50-F2-00-00-01"),
+                           NS(family=socket.AF_INET, address="10.60.62.42", broadcast=None, netmask="255.0.0.0")],
+            "Wi-Fi": [NS(family=link, address="3C-A9-F4-11-22-33"),
+                      NS(family=socket.AF_INET, address="192.168.1.30", broadcast=None, netmask="255.255.255.0")],
+            "Ethernet": [NS(family=link, address="1C-69-7A-0B-12-EF"),
+                         NS(family=socket.AF_INET, address="192.168.1.20", broadcast=None, netmask="255.255.255.0")],
+        },
+        net_if_stats=lambda: {},
+    )
+    cards = wol_mod._cards(fake)
+    assert [c["name"] for c in cards] == ["Wi-Fi", "Ethernet"], "VM and VPN cards cannot wake a PC"
+    ranked = sorted(cards, key=lambda c: wol_mod._rank(c, "192.168.1.20"))
+    assert ranked[0]["mac"] == MAC and ranked[0]["broadcast"] == "192.168.1.255"
+    # Internet through Wi-Fi: Wi-Fi first, Ethernet still in the list
+    ranked = sorted(cards, key=lambda c: wol_mod._rank(c, "192.168.1.30"))
+    assert [c["name"] for c in ranked] == ["Wi-Fi", "Ethernet"]

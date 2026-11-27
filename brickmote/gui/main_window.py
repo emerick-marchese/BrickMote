@@ -551,7 +551,13 @@ class MainWindow(QMainWindow):
         if state == "online":
             QTimer.singleShot(500, self.poll_presence)
             where = "" if self.core.relay_masked else f" ({detail})"
-            self.row_relay.set("En ligne", "ok", f"Joignable par ID depuis Internet{where}")
+            if self.core.relay_outdated:
+                self.row_relay.set(
+                    "À mettre à jour", "warn",
+                    "Joignable par ID, mais le serveur relais est ancien : l'état des postes (pastilles) est indisponible",
+                )
+            else:
+                self.row_relay.set("En ligne", "ok", f"Joignable par ID depuis Internet{where}")
         elif state == "connecting":
             where = "au serveur BrickMote" if self.core.relay_masked else f"à {detail}"
             self.row_relay.set("Connexion…", "warn", f"Connexion {where}")
@@ -860,16 +866,20 @@ class MainWindow(QMainWindow):
             # tried twice already without success: do not loop, offer it instead
             logging.getLogger(__name__).warning("mise à jour %s : installation automatique abandonnée", release.version)
             return False
-        self.core.settings.update_attempts = {release.version: attempts + [now]}
-        try:
-            self.core.save_settings()
-        except OSError:
-            pass
+
+        def record():  # counted only when an installation really starts
+            self.core.settings.update_attempts = {release.version: attempts + [now]}
+            try:
+                self.core.save_settings()
+            except OSError:
+                pass
+
         shown = self.isVisible() and not self.isMinimized()
         if not shown:
             # nobody is looking (started with Windows): the update service
             # downloads and installs it; BrickMote comes back by itself
             if updater.request_service_update():
+                record()
                 self._spawn_relauncher(release.version, minimized=True, window=False)
                 if self.tray:
                     self.tray.showMessage("BrickMote", f"Mise à jour vers BrickMote {release.version}…")
@@ -878,6 +888,7 @@ class MainWindow(QMainWindow):
             return False
         # someone is looking: the whole window shows the progress, nothing else
         # can be done meanwhile
+        record()
         self._start_update_screen(release)
         return True
 

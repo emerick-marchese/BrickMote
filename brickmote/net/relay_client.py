@@ -64,6 +64,8 @@ class RelayClient:
         self.display_name = display_name
         self._writer: Optional[asyncio.StreamWriter] = None
         self._port: Optional[int] = None
+        self.features: set[str] = set()  # what the relay supports (announced at registration)
+        self.server_version = ""
         self._rid = itertools.count(1)
         self._routes: dict[int, asyncio.Future] = {}
         self._task: Optional[asyncio.Task] = None
@@ -119,6 +121,9 @@ class RelayClient:
                 if reply.get("t") != "registered":
                     raise RelayError(str(reply.get("code", "unavailable")))
                 self.device_id = reply.get("id")
+                features = reply.get("features")
+                self.features = {f for f in features if isinstance(f, str)} if isinstance(features, list) else set()
+                self.server_version = reply.get("v") if isinstance(reply.get("v"), str) else ""
                 self.public_ip = public_ipv4(reply.get("addr"))
                 self._writer, self._port = writer, port
                 self.online.set()
@@ -235,8 +240,8 @@ class RelayClient:
         """IDs among ``device_ids`` currently connected to the relay, or None
         when the relay cannot tell (offline, or an older relay that does not
         know this request)."""
-        if self._writer is None or not self.online.is_set():
-            return None
+        if self._writer is None or not self.online.is_set() or "presence" not in self.features:
+            return None  # an older relay would not answer
         rid = next(self._rid)
         fut = asyncio.get_running_loop().create_future()
         self._routes[rid] = fut

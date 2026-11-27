@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from .. import __version__
 from ..constants import MAX_CONTROL_FRAME, RELAY_PORTS
 from ..crypto.identity import id_from_public, verify_signature
 from ..net.framing import FrameError, close_writer, read_json, tune_socket, write_json
@@ -38,6 +39,7 @@ JOIN_CTX = b"BrickMote relay join v1\x00"
 
 PAIR_TIMEOUT = 30.0
 MAX_PRESENCE_IDS = 128
+FEATURES = ("presence",)  # announced to clients (older relays announce nothing)
 FIRST_MESSAGE_TIMEOUT = 10.0
 CONTROL_IDLE_TIMEOUT = 90.0
 PIPE_IDLE_TIMEOUT = 300.0
@@ -134,7 +136,7 @@ class RelayServer:
                 continue
             self.servers.append(srv)
             bound.extend(sock.getsockname()[1] for sock in srv.sockets)
-            log.info("listening on %s:%s", host or "*", port)
+            log.info("BrickMote relay %s listening on %s:%s", __version__, host or "*", port)
         return sorted(set(bound))
 
     async def stop(self) -> None:
@@ -193,7 +195,9 @@ class RelayServer:
         if old is not None:
             await close_writer(old.writer)
         log.info("device %s online from %s", device_id, ip)
-        await client.send({"t": "registered", "id": device_id, "addr": ip})
+        await client.send(
+            {"t": "registered", "id": device_id, "addr": ip, "v": __version__, "features": list(FEATURES)}
+        )
         try:
             while True:
                 req = await asyncio.wait_for(read_json(reader, MAX_CONTROL_FRAME), CONTROL_IDLE_TIMEOUT)

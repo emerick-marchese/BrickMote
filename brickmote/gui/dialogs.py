@@ -567,6 +567,7 @@ class WakeDialog(QDialog):
         self.action: Optional[str] = None
         self.values: dict = {}
         wol = wol or {}
+        self._extra_macs = [m for m in wol.get("extra_macs") or [] if isinstance(m, str)]
         lay = QVBoxLayout(self)
         title = f"Réveiller {device_label}" if device_label else "Réveiller un PC à distance"
         lay.addWidget(_label(f"<b>{_esc(title)}</b>", "CardTitle"))
@@ -655,6 +656,8 @@ class WakeDialog(QDialog):
             "address": address,
             "secureon": self.secureon.text().strip(),
             "auto": False,
+            # the computer's other cards (learned automatically) still get a packet
+            "extra_macs": [m for m in self._extra_macs if m != mac],
         }
         self.action = action
         self.accept()

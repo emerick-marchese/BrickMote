@@ -179,12 +179,26 @@ def _send(packet: bytes, targets: list[str], port: int, repeat: int) -> tuple[li
 def send_wake(wol: dict, repeat: int = 3) -> tuple[list[str], list[str]]:
     """Send a wake for a stored configuration ({mac, box, port, address, local,
     secureon}). Returns (destinations reached, errors)."""
-    packet = magic_packet(wol.get("mac", ""), wol.get("secureon", ""))
     port = check_port(int(wol.get("port") or DEFAULT_PORT))
+    macs = [wol.get("mac", "")] + [m for m in wol.get("extra_macs") or [] if m != wol.get("mac")]
+    packets = [magic_packet(m, wol.get("secureon", "")) for m in macs[0:1]]  # the main MAC must be valid
+    for m in macs[1:MAX_MACS + 1]:
+        try:
+            packets.append(magic_packet(m, wol.get("secureon", "")))
+        except WolError:
+            pass
     targets = wake_targets(wol)
     if not targets:
         raise WolError("aucune destination : renseignez l'adresse de la box ou activez le réseau local")
-    sent, errors = _send(packet, targets, port, repeat)
+    sent, errors = [], []
+    for i, packet in enumerate(packets):
+        # one packet per card of the computer (the one that can wake it is not
+        # always the one BrickMote saw)
+        ok, err = _send(packet, targets, port, repeat)
+        if i == 0:
+            sent, errors = ok, err
+        elif not sent:
+            sent = ok
     if not sent:
         raise WolError("envoi impossible — " + " ; ".join(errors))
     return sent, errors
@@ -237,49 +251,135 @@ def local_ipv4s() -> list[str]:
     return out[:8]
 
 
-def _primary_ipv4() -> Optional[str]:
+def _route_ipv4(destination: str = "8.8.8.8") -> Optional[str]:
+    """Local IPv4 of the card that reaches ``destination`` (no packet sent)."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("10.255.255.255", 1))  # no packet is sent
+            s.connect((destination, 9))
             return s.getsockname()[0]
     except OSError:
         return None
 
 
+def _primary_ipv4() -> Optional[str]:
+    # the card used for the Internet is the real LAN card; a route to a 10.x
+    # address may go through a VPN or a virtual card instead
+    return _route_ipv4("8.8.8.8") or _route_ipv4("10.255.255.255")
+
+
+MAX_MACS = 4
+# cards that can never wake the computer (virtual machines, VPNs, tunnels...)
+_VIRTUAL_NAMES = (
+    "virtual", "vmware", "vbox", "virtualbox", "hyper-v", "vethernet", "loopback", "bluetooth", "tap", "tun",
+    "zerotier", "tailscale", "hamachi", "radmin", "wsl", "docker", "npcap", "miniport", "teredo", "isatap", "vpn",
+    "wireguard", "openvpn", "fortinet", "cisco", "pangp", "nordlynx", "proton", "veth", "br-", "virbr", "lxc",
+)
+_VIRTUAL_OUIS = ("00:50:56", "00:0C:29", "00:05:69", "00:1C:14", "08:00:27", "0A:00:27", "00:15:5D", "00:03:FF",
+                 "7A:79:", "00:FF:", "02:00:4C")
+
+
+def _is_virtual(name: str, mac: str) -> bool:
+    low = name.lower()
+    if any(word in low for word in _VIRTUAL_NAMES):
+        return True
+    if mac.startswith(_VIRTUAL_OUIS):
+        return True
+    first = int(mac[:2], 16)
+    return bool(first & 0x01) or bool(first & 0x02) or mac == "00:00:00:00:00:00"  # multicast / locally administered
+
+
+def _cards(psutil) -> list[dict]:
+    """Physical network cards: name, MAC, IPv4, broadcast, up/down."""
+    link_families = {getattr(psutil, "AF_LINK", None), getattr(socket, "AF_PACKET", None)} - {None}
+    try:
+        stats = psutil.net_if_stats()
+    except Exception:  # noqa: BLE001
+        stats = {}
+    cards = []
+    for name, addrs in psutil.net_if_addrs().items():
+        link = next((a for a in addrs if a.family in link_families and a.address), None)
+        if link is None:
+            continue
+        try:
+            mac = format_mac(link.address)
+        except WolError:
+            continue
+        if _is_virtual(name, mac):
+            continue
+        v4 = next((a for a in addrs if a.family == socket.AF_INET and a.address), None)
+        broadcast = None
+        if v4 is not None:
+            broadcast = v4.broadcast
+            if not broadcast and v4.netmask:
+                try:
+                    broadcast = str(ipaddress.IPv4Network(f"{v4.address}/{v4.netmask}", strict=False).broadcast_address)
+                except ValueError:
+                    broadcast = None
+        st = stats.get(name)
+        cards.append({
+            "name": name,
+            "mac": mac,
+            "ip": v4.address if v4 is not None else "",
+            "broadcast": broadcast or DEFAULT_ADDRESS,
+            "up": bool(st.isup) if st is not None else True,
+        })
+    return cards
+
+
+def _rank(card: dict, primary_ip: Optional[str]) -> tuple:
+    name = card["name"].lower()
+    wired = any(w in name for w in ("ethernet", "eth", "enp", "eno", "ens", "en0", "lan", "realtek", "intel"))
+    wireless = any(w in name for w in ("wi-fi", "wifi", "wlan", "wireless", "wl"))
+    return (
+        card["ip"] != primary_ip or not primary_ip,  # the card used for the Internet first
+        not wired,  # Wake-on-LAN works on wired cards
+        wireless,
+        not card["up"],
+        not card["ip"],
+        card["name"],
+    )
+
+
 def local_wol_info() -> Optional[dict]:
-    """MAC address and broadcast address of the interface used on the LAN."""
+    """MAC addresses able to wake this computer, best first, and the broadcast
+    address of its LAN."""
     ip = _primary_ipv4()
     try:
         import psutil
     except ImportError:
         psutil = None
-    if psutil is not None and ip:
-        link_families = {getattr(psutil, "AF_LINK", None), getattr(socket, "AF_PACKET", None)} - {None}
-        for name, addrs in psutil.net_if_addrs().items():
-            v4 = next((a for a in addrs if a.family == socket.AF_INET and a.address == ip), None)
-            if v4 is None:
-                continue
-            link = next((a for a in addrs if a.family in link_families), None)
-            if link is None:
-                continue
-            try:
-                mac = format_mac(link.address)
-            except WolError:
-                continue
-            broadcast = v4.broadcast
-            if not broadcast and v4.netmask:
-                try:
-                    broadcast = str(ipaddress.IPv4Network(f"{ip}/{v4.netmask}", strict=False).broadcast_address)
-                except ValueError:
-                    broadcast = None
-            return {"mac": mac, "broadcast": broadcast or DEFAULT_ADDRESS, "interface": name, "ip": ip}
+    if psutil is not None:
+        cards = sorted(_cards(psutil), key=lambda c: _rank(c, ip))
+        if cards:
+            best = cards[0]
+            return {
+                "mac": best["mac"],
+                "macs": [c["mac"] for c in cards[:MAX_MACS]],
+                "broadcast": best["broadcast"],
+                "interface": best["name"],
+                "ip": best["ip"] or ip or "",
+            }
     # Fallback without psutil: uuid.getnode() (ignored when it is a random value)
     import uuid
 
     node = uuid.getnode()
     if node >> 40 & 0x01:
         return None
-    return {"mac": format_mac(node.to_bytes(6, "big")), "broadcast": DEFAULT_ADDRESS, "interface": "", "ip": ip or ""}
+    mac = format_mac(node.to_bytes(6, "big"))
+    return {"mac": mac, "macs": [mac], "broadcast": DEFAULT_ADDRESS, "interface": "", "ip": ip or ""}
+
+
+def _clean_macs(values: object) -> list[str]:
+    out: list[str] = []
+    if isinstance(values, list):
+        for v in values[:MAX_MACS * 2]:
+            try:
+                mac = format_mac(str(v))
+            except WolError:
+                continue
+            if mac not in out:
+                out.append(mac)
+    return out[:MAX_MACS]
 
 
 def sanitize_wol(value: object) -> Optional[dict]:
@@ -301,7 +401,8 @@ def sanitize_wol(value: object) -> Optional[dict]:
         box = ""
     port = value.get("port")
     port = port if isinstance(port, int) and 1 <= port <= 65535 else DEFAULT_PORT
-    return {"mac": mac, "broadcast": broadcast, "box": box, "port": port}
+    macs = [mac] + [m for m in _clean_macs(value.get("macs")) if m != mac]  # the main one first
+    return {"mac": mac, "macs": macs[:MAX_MACS], "broadcast": broadcast, "box": box, "port": port}
 
 
 def merge_wol(current: Optional[dict], learned: dict) -> dict:
@@ -310,8 +411,10 @@ def merge_wol(current: Optional[dict], learned: dict) -> dict:
     Settings the user edited by hand ("auto": False) are kept; only the MAC
     address is refreshed. Otherwise the host's latest values win.
     """
+    extra = [m for m in learned.get("macs", []) if m != learned["mac"]]
     fresh = {
         "mac": learned["mac"],
+        "extra_macs": extra,
         "address": learned.get("broadcast") or DEFAULT_ADDRESS,
         "box": learned.get("box", ""),
         "port": learned.get("port") or DEFAULT_PORT,
@@ -322,7 +425,11 @@ def merge_wol(current: Optional[dict], learned: dict) -> dict:
     if not current:
         return fresh
     if current.get("auto") is False:
-        return {**current, "mac": learned["mac"]}
+        # set by hand (e.g. copied from a phone app): the MAC typed by the
+        # user is kept; the computer's cards are only added as extras
+        mine = current.get("mac") or learned["mac"]
+        extra = [m for m in [learned["mac"], *learned.get("macs", [])] if m != mine]
+        return {**current, "mac": mine, "extra_macs": list(dict.fromkeys(extra))[:MAX_MACS]}
     return {**fresh, "secureon": current.get("secureon", ""), "local": current.get("local", True)}
 
 
