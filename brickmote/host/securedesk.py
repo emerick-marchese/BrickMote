@@ -301,6 +301,9 @@ if IS_WINDOWS:
     # read/write the pipe, but never FILE_CREATE_PIPE_INSTANCE (0x4): the user
     # cannot create a fake helper pipe next to ours
     CLIENT_RIGHTS = 0x00120183
+    # what the client asks for: read + write data, nothing else (GENERIC_WRITE
+    # would include FILE_CREATE_PIPE_INSTANCE, which the pipe never grants)
+    CLIENT_ACCESS = 0x00100083  # FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE
 
     class SECURITY_ATTRIBUTES(ctypes.Structure):
         _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", wintypes.LPVOID), ("bInheritHandle", wintypes.BOOL)]
@@ -410,7 +413,7 @@ if IS_WINDOWS:
 
         @classmethod
         def connect(cls, name: str) -> "PipeStream":
-            h = CreateFileW(name, GENERIC_READ | GENERIC_WRITE, 0, None, OPEN_EXISTING,
+            h = CreateFileW(name, CLIENT_ACCESS, 0, None, OPEN_EXISTING,
                             SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, None)
             if h in (None, INVALID_HANDLE):
                 raise _err("connexion à l'assistant")

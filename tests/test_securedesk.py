@@ -186,14 +186,16 @@ def test_windows_pipe_round_trip_with_acl():
     threading.Thread(target=sd.serve_pipe, args=(name, sid, agent, session, stop), daemon=True).start()
     import time
 
+    error = None
     for _ in range(50):
         try:
             stream = sd.PipeStream.connect(name)
             break
-        except OSError:
+        except OSError as exc:
+            error = exc
             time.sleep(0.1)
     else:
-        pytest.fail("pipe not created")
+        pytest.fail(f"pipe not reachable: {error!r}")
     client = sd.SecureDesktopClient(connect=lambda: stream)
     w, h, data = client.grab(1)
     assert (w, h, len(data)) == (4, 2, 32)
