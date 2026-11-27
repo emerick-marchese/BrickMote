@@ -267,7 +267,7 @@ def test_service_retries_until_the_network_is_up(monkeypatch):
 
 def test_relauncher_without_version_only_waits_for_the_installer():
     script = updater.relauncher_script(None, "C:\\BrickMote.exe", minimized=False)
-    assert "-eq '" not in script and "[bool](-not $setup)" in script
+    assert "$v -eq" not in script and "if($true){return $true}" in script
     assert script.rstrip().endswith("Start-Process -FilePath 'C:\\BrickMote.exe'}")  # no empty -ArgumentList
     shown = updater.relauncher_script("1.2.3", "C:\\BrickMote.exe", minimized=False, window=True)
     assert "Windows.Forms" in shown and "ShowDialog" in shown and "Start-Process" in shown
@@ -311,3 +311,46 @@ def test_download_reports_progress(signed, tmp_path):
     seen = []
     updater.download_verified(release, name, tmp_path, get=server.get, progress=lambda d, t: seen.append((d, t)))
     assert seen and seen[-1] == (3000, 3000)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="PowerShell (Windows)")
+@pytest.mark.parametrize("window", [False, True])
+def test_relauncher_really_starts_brickmote_again(tmp_path, window):
+    """Runs the real PowerShell script: no installer shows up, so after the
+    (shortened) wait it must start the program again."""
+    import time
+
+    marker = tmp_path / "started.txt"
+    fake = tmp_path / "Fake BrickMote's.cmd"  # spaces and a quote in the path
+    fake.write_text(f'@echo started %* > "{marker}"\r\n')
+    script = updater.relauncher_script(
+        "9.9.9", str(fake), minimized=True, window=window, start_delay=1, no_installer_s=3
+    )
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode()
+    proc = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+        capture_output=True, timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    for _ in range(50):
+        if marker.exists():
+            break
+        time.sleep(0.2)
+    assert marker.exists(), "BrickMote was not started again"
+    assert "--minimized" in marker.read_text()
+
+
+def test_background_brickmote_processes_are_not_the_application(monkeypatch):
+    import types
+
+    exe = os.path.realpath(sys.executable)
+    procs = [
+        types.SimpleNamespace(info={"pid": 10, "exe": exe, "cmdline": [exe, "--desktop-service"]}),
+        types.SimpleNamespace(info={"pid": 11, "exe": exe, "cmdline": [exe, "--desktop-helper", "S-1-5-21-1-2-3-1001"]}),
+        types.SimpleNamespace(info={"pid": 12, "exe": exe, "cmdline": [exe, "--update-service"]}),
+    ]
+    psutil = pytest.importorskip("psutil")
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: iter(procs))
+    assert not updater.app_running(), "the lock screen helper must not block updates"
+    procs.append(types.SimpleNamespace(info={"pid": 13, "exe": exe, "cmdline": [exe, "--minimized"]}))
+    assert updater.app_running()

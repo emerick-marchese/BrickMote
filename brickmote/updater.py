@@ -303,6 +303,19 @@ def launch_installer_elevated(path: Path) -> None:
         raise UpdateError("installation annulée")
 
 
+BACKGROUND_FLAGS = ("--update-service", "--desktop-service", "--desktop-helper")
+_BREAKAWAY = 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+
+
+def _detached(args: list[str], extra_flags: int = 0) -> subprocess.Popen:
+    """Start a process that outlives us (and the scheduled task we run in)."""
+    flags = extra_flags | getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    try:
+        return subprocess.Popen(args, creationflags=flags | _BREAKAWAY, close_fds=True)
+    except OSError:  # this job does not allow breaking away
+        return subprocess.Popen(args, creationflags=flags, close_fds=True)
+
+
 def app_running() -> bool:
     """Is a BrickMote window/tray instance running (other than this process)?"""
     try:
@@ -317,8 +330,9 @@ def app_running() -> bool:
                 continue
             if os.path.normcase(os.path.realpath(proc.info["exe"])) != exe:
                 continue
-            if "--update-service" in (proc.info["cmdline"] or []):
-                continue
+            cmdline = proc.info["cmdline"] or []
+            if any(flag in cmdline for flag in BACKGROUND_FLAGS):
+                continue  # update service, lock screen service/helper: not the application
             return True
         except (psutil.Error, OSError):
             continue
@@ -360,6 +374,16 @@ def request_service_update() -> bool:
     return result.returncode == 0
 
 
+def last_update_log_line() -> str:
+    """Last line of the update service's log (Program Files: readable by all)."""
+    path = Path(sys.executable).resolve().parent / "updates" / "update.log"
+    try:
+        lines = [ln.strip() for ln in path.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+    except OSError:
+        return ""
+    return lines[-1][-300:] if lines else ""
+
+
 def setup_running() -> bool:
     """Is a BrickMote installer running (update being installed)?"""
     try:
@@ -376,7 +400,13 @@ def setup_running() -> bool:
 
 
 def relauncher_script(
-    version: Optional[str], exe: str, minimized: bool, timeout_min: int = 15, window: bool = False
+    version: Optional[str],
+    exe: str,
+    minimized: bool,
+    timeout_min: int = 15,
+    window: bool = False,
+    start_delay: int = 8,
+    no_installer_s: int = 120,
 ) -> str:
     """PowerShell run as the user: waits until the update service has
     installed ``version``, then starts BrickMote again (also after a timeout,
@@ -391,17 +421,25 @@ def relauncher_script(
         f"'HKLM:\\SOFTWARE\\{view}Microsoft\\Windows\\CurrentVersion\\Uninstall\\{INNO_APP_ID}'"
         for view in ("", "WOW6432Node\\")
     )
-    done = f"(($v -eq '{version}') -and (-not $setup))" if version else "(-not $setup)"
+    installed = f"($v -eq '{version}')" if version else "$true"
     script = [
         "$ErrorActionPreference='SilentlyContinue'",
         f"$deadline=(Get-Date).AddMinutes({int(timeout_min)})",
         "$start=Get-Date",
+        "$script:seen=$null",
+        # done when: the new version is installed and its installer has
+        # finished; or an installer ran and finished (even if it failed); or
+        # no installer ever started within 2 minutes (nothing to wait for)
         "function Test-Done {"
-        " if((Get-Date) -ge $deadline){return $true};"
-        " if(((Get-Date)-$start).TotalSeconds -lt 8){return $false};"
-        f" $v=($({keys}) | ForEach-Object {{ (Get-ItemProperty -Path $_).DisplayVersion }} | Where-Object {{ $_ }} | Select-Object -First 1);"
+        " $now=Get-Date;"
+        " if($now -ge $deadline){return $true};"
+        f" if(($now-$start).TotalSeconds -lt {int(start_delay)}){{return $false}};"
         " $setup=Get-Process -Name 'BrickMote-Setup*';"
-        f" return [bool]{done} }}",
+        " if($setup){$script:seen=$now; return $false};"
+        f" $v=($({keys}) | ForEach-Object {{ (Get-ItemProperty -Path $_).DisplayVersion }} | Where-Object {{ $_ }} | Select-Object -First 1);"
+        f" if({installed}){{return $true}};"
+        " if($script:seen){return (($now-$script:seen).TotalSeconds -ge 5)};"
+        f" return (($now-$start).TotalSeconds -ge {int(no_installer_s)}) }}",
     ]
     if window:
         script += [
@@ -434,11 +472,10 @@ def spawn_relauncher(version: Optional[str], minimized: bool, window: bool = Fal
     exe = str(Path(sys.executable).resolve())
     script = relauncher_script(version, exe, minimized, window=window)
     encoded = base64.b64encode(script.encode("utf-16-le")).decode()
-    subprocess.Popen(
+    _detached(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
          "-EncodedCommand", encoded],
-        creationflags=_NO_WINDOW | getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-        close_fds=True,
+        _NO_WINDOW,
     )
 
 
@@ -492,11 +529,8 @@ def run_update_service() -> int:
             log.info("BrickMote est déjà ouvert : mise à jour %s reportée", release.version)
             return 0
         log.info("installation de la version %s (signature et empreinte vérifiées)", release.version)
-        subprocess.Popen(
-            [str(installer), *_windows_installer_args(relaunch=False), f"/LOG={updates / 'install.log'}"],
-            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-            close_fds=True,
-        )
+        proc = _detached([str(installer), *_windows_installer_args(relaunch=False), f"/LOG={updates / 'install.log'}"])
+        log.info("installateur lancé (pid %s)", getattr(proc, "pid", "?"))
         return 0
     except Exception as exc:  # noqa: BLE001 - never crash at boot; retry next boot
         log.warning("mise à jour impossible : %s", exc)

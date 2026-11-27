@@ -165,6 +165,7 @@ class MainWindow(QMainWindow):
         self._last_update_check = 0.0
         self.update_check_failed.connect(self._retry_update_check)
         QTimer.singleShot(3000, self._initial_update_check)
+        QTimer.singleShot(2500, self._report_failed_update)
 
     # ================================================================ layout
     def _build(self):
@@ -789,6 +790,24 @@ class MainWindow(QMainWindow):
         delay = min(600, 30 * 2 ** self._update_retry)
         self._update_retry += 1
         QTimer.singleShot(delay * 1000, self.check_updates)
+
+    def _report_failed_update(self):
+        """We tried to install a newer version a moment ago, and still run the
+        old one: say so instead of failing silently."""
+        if updater.install_kind() != "windows-installed":
+            return
+        now = time.time()
+        for version, times in (self.core.settings.update_attempts or {}).items():
+            if not isinstance(times, list) or not times or not updater.is_newer(version):
+                continue
+            if now - max(t for t in times if isinstance(t, (int, float))) < 2 * 3600:
+                detail = updater.last_update_log_line()
+                text = f"La mise à jour vers BrickMote {version} ne s'est pas installée."
+                if detail:
+                    text += f"\nDernier message du service de mise à jour : {detail}"
+                self.show_toast(text, False)
+                logging.getLogger(__name__).warning(text)
+                return
 
     def _initial_update_check(self):
         if self._last_update_check == 0 and not self._update_check_running:
