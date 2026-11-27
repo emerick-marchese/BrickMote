@@ -28,7 +28,17 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--version", action="store_true", help="afficher la version et quitter")
     parser.add_argument("--update-service", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--desktop-service", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--desktop-helper", metavar="SID", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.desktop_service:  # scheduled task (SYSTEM, at boot): lock screen support
+        from ..host.securedesk import run_desktop_service
+
+        return run_desktop_service()
+    if args.desktop_helper:  # started by the desktop service, SYSTEM in the user's session
+        from ..host.securedesk import run_helper
+
+        return run_helper(args.desktop_helper)
     if args.update_service:  # scheduled task (SYSTEM, at boot): no window at all
         from ..updater import run_update_service
 

@@ -12,6 +12,7 @@ from typing import Callable, Optional
 
 from ..crypto.handshake import HandshakeResult, sanitize_permissions
 from ..session import PeerSession, SessionEvents
+from . import securedesk
 from .capture import session_locked
 from .cursors import to_abs
 from .capture import QUALITY_PRESETS, AdaptiveQuality, FrameEncoder, MSSCapture, get_profile, pack_frame, scale_for, scaled
@@ -39,11 +40,19 @@ class HostSession(PeerSession):
         direct_info: Optional[dict] = None,
         cursor_hub=None,
         local_activity=None,
+        secure_factory: Optional[Callable] = None,
     ):
         super().__init__(result, events, downloads)
         self.wol_info = wol_info
         self.cursor_hub = cursor_hub
         self.local_activity = local_activity  # priority to the person at the computer
+        # lock screen / Ctrl+Alt+Del (Windows): seen and controlled through the
+        # SYSTEM helper while it is displayed
+        if secure_factory is None and securedesk.available():
+            secure_factory = securedesk.SecureDesktopClient
+        self._secure = secure_factory() if secure_factory is not None else None
+        self._secure_active = False
+        self._screen = "ok"  # ok | locked | secure | uac (set by the capture thread)
         self.color: Optional[int] = None  # this viewer's pointer color (multi-user)
         self.direct_info = direct_info
         self.profile = get_profile(quality)
@@ -139,12 +148,19 @@ class HostSession(PeerSession):
         self.monitor_index = index
         self._cursor_reader.set_monitor(mon)
         self._input_exec.submit(self._injector.set_monitor, mon)
+        if self._secure is not None:
+            self._secure.set_monitor(mon)
         self._force_full = True
         return True
 
     async def on_close(self) -> None:
         if self.cursor_hub is not None:
             self.cursor_hub.leave(self)
+        if self._secure is not None:
+            try:
+                self._input_exec.submit(self._secure.close)
+            except RuntimeError:
+                pass
         try:  # executors refuse new work while the application exits
             self._input_exec.submit(self._injector.release_all)
             self._capture_exec.submit(self._close_capture)
@@ -218,11 +234,10 @@ class HostSession(PeerSession):
                     await self._set_status("unavailable")
                 await asyncio.sleep(0.5)
                 continue
-            if payload == b"locked":
-                await self._set_status("locked")
+            await self._set_status(self._screen)
+            if self._screen == "locked":
                 await asyncio.sleep(0.5)
                 continue
-            await self._set_status("ok")
             if payload is not None and not self.closed:
                 frame_id += 1
                 self._in_flight += 1
@@ -233,14 +248,16 @@ class HostSession(PeerSession):
                         self._sent.pop(old, None)
                 await self.channel.send(payload)
             elapsed = loop.time() - started
-            await asyncio.sleep(max(0.002, 1.0 / self.fps - elapsed))
+            # the lock screen goes through the helper (raw images): 10 per second is plenty
+            fps = min(self.fps, 10) if self._screen in ("secure", "uac") else self.fps
+            await asyncio.sleep(max(0.002, 1.0 / fps - elapsed))
 
     async def _set_status(self, status: str) -> None:
         """Tell the viewer when the screen cannot be shown (lock screen...)."""
         if status != self._status:
             self._status = status
-            if status == "ok":
-                self._force_full = True
+            if status in ("ok", "secure", "uac"):
+                self._force_full = True  # another desktop: send it whole
             await self.send_json({"t": "status", "s": status})
 
     def _on_ack(self, fid: object) -> None:
@@ -254,15 +271,29 @@ class HostSession(PeerSession):
     def _grab_encode(self, frame_id: int) -> Optional[bytes]:
         if self._capture is None:
             self._capture = self._capture_factory()
+        secure = False
         if session_locked():
-            return b"locked"
-        try:
-            width, height, raw = self._capture.grab(self.monitor_index)
-        except Exception:
-            # a capture handle can stay broken after a desktop switch (lock,
-            # UAC, resolution change): start again with a fresh one
-            self._close_capture()
-            raise
+            # lock screen, Ctrl+Alt+Del, UAC: only the SYSTEM helper can see it
+            if self._secure is None:
+                self._secure_active, self._screen = False, "locked"
+                return None
+            try:
+                width, height, raw = self._secure.grab(self.monitor_index)
+            except securedesk.SecureDeskError as exc:
+                log.debug("secure desktop: %s", exc)
+                self._secure_active, self._screen = False, "locked"
+                return None
+            self._secure_active, secure = True, True
+            self._screen = "uac" if self._secure.state.get("uac") else "secure"
+        else:
+            self._secure_active, self._screen = False, "ok"
+            try:
+                width, height, raw = self._capture.grab(self.monitor_index)
+            except Exception:
+                # a capture handle can stay broken after a desktop switch (lock,
+                # UAC, resolution change): start again with a fresh one
+                self._close_capture()
+                raise
         frame = FrameEncoder.as_array(width, height, raw)
         profile = self.profile
         quality, level_scale = self.adaptive.current()
@@ -273,7 +304,7 @@ class HostSession(PeerSession):
             self._encoder.reset()
         rects = self._encoder.changed_rects(frame)
         fw, fh = scaled(width, m), scaled(height, m)
-        cur = self._cursor_reader.cursor()
+        cur = None if secure else self._cursor_reader.cursor()
         cursor = (min(fw - 1, int(cur[0] * fw)), min(fh - 1, int(cur[1] * fh))) if cur else None
         now = time.monotonic()
         if not rects:
@@ -298,7 +329,7 @@ class HostSession(PeerSession):
         return pack_frame(frame_id, fw, fh, cursor, encoded)
 
     # ------------------------------------------------------------- control
-    def _inject(self, fn, *args, droppable: bool = True) -> None:
+    def _inject(self, method: str, *args, droppable: bool = True) -> None:
         # The counter is shared with the input thread: always under the lock,
         # or it could drift and end up dropping every event.
         with self._pending_lock:
@@ -308,7 +339,9 @@ class HostSession(PeerSession):
 
         def run():
             try:
-                fn(*args)
+                # on the lock screen, input goes through the SYSTEM helper
+                target = self._secure if self._secure_active and self._secure is not None else self._injector
+                getattr(target, method)(*args)
             finally:
                 with self._pending_lock:
                     self._pending_input -= 1
@@ -345,11 +378,9 @@ class HostSession(PeerSession):
                 # waits, except releases (nothing must stay pressed)
                 action = msg.get("a")
                 if t == "mouse" and action == "up":
-                    self._inject(self._injector.mouse_button, msg.get("b"), False, None, None, droppable=False)
+                    self._inject("mouse_button", msg.get("b"), False, None, None, droppable=False)
                 elif t == "key" and action == "up":
-                    self._inject(
-                        self._injector.key, False, msg.get("key"), msg.get("char"), droppable=False
-                    )
+                    self._inject("key", False, msg.get("key"), msg.get("char"), droppable=False)
                 elif t == "mouse" and action == "move":
                     self._point(msg, drove=False)  # still show where this viewer points
                 return
@@ -358,19 +389,19 @@ class HostSession(PeerSession):
                 if action in ("move", "down", "up"):
                     self._point(msg, drove=True)
                 if action == "move":
-                    self._inject(self._injector.mouse_move, msg.get("x"), msg.get("y"))
+                    self._inject("mouse_move", msg.get("x"), msg.get("y"))
                 elif action in ("down", "up"):
                     self._inject(
-                        self._injector.mouse_button, msg.get("b"), action == "down", msg.get("x"), msg.get("y"),
+                        "mouse_button", msg.get("b"), action == "down", msg.get("x"), msg.get("y"),
                         droppable=action == "down",
                     )
             elif t == "wheel":
-                self._inject(self._injector.scroll, msg.get("dx"), msg.get("dy"))
+                self._inject("scroll", msg.get("dx"), msg.get("dy"))
             else:
                 action = msg.get("a")
                 if action in ("down", "up"):
                     self._inject(
-                        self._injector.key, action == "down", msg.get("key"), msg.get("char"),
+                        "key", action == "down", msg.get("key"), msg.get("char"),
                         droppable=action == "down",
                     )
         elif t == "monitor":

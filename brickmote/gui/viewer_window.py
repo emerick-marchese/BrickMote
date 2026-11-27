@@ -54,6 +54,7 @@ class RemoteScreen(QWidget):
         self.pointers = PointerSet()
         self.live_cursors = False  # the host sends pointers separately (newer hosts)
         self.local_priority = False  # the person at the computer is using its mouse
+        self.status_banner = ""  # e.g. a UAC prompt is displayed (image still shown)
         self._label_font = label_font(self.font())
         self._pointer_area = QRegion()  # where pointers were last drawn
         self._glide_timer = QTimer(self, interval=8, timeout=self._glide_tick)
@@ -119,8 +120,9 @@ class RemoteScreen(QWidget):
         elif self.cursor_pos and self._show_system_cursor():
             sx = rect.width() / self.image.width()
             draw_pointer(p, rect.x() + self.cursor_pos[0] * sx, rect.y() + self.cursor_pos[1] * sx, None, None, self._label_font)
-        if self.local_priority:
-            self._paint_local_banner(p)
+        banner = self.LOCAL_TEXT if self.local_priority else self.status_banner
+        if banner:
+            self._paint_local_banner(p, banner)
         if self.overlay:
             self._paint_overlay(p)
         p.end()
@@ -131,7 +133,7 @@ class RemoteScreen(QWidget):
         w = min(640.0, self.width() - 24.0)
         return QRectF((self.width() - w) / 2, 12, w, 34)
 
-    def _paint_local_banner(self, p: QPainter):
+    def _paint_local_banner(self, p: QPainter, message: str):
         box = self._local_banner_rect()
         p.save()
         p.fillRect(box, QColor(17, 19, 23, 235))
@@ -141,7 +143,7 @@ class RemoteScreen(QWidget):
         f.setBold(True)
         p.setFont(f)
         p.setPen(QColor("white"))
-        text = p.fontMetrics().elidedText(self.LOCAL_TEXT, Qt.ElideRight, int(box.width() - 26))
+        text = p.fontMetrics().elidedText(message, Qt.ElideRight, int(box.width() - 26))
         p.drawText(box.adjusted(16, 0, -10, 0), Qt.AlignVCenter | Qt.AlignLeft | Qt.TextSingleLine, text)
         p.restore()
 
@@ -534,8 +536,8 @@ class ViewerWindow(QMainWindow):
     STATUS_TEXT = {
         "locked": (
             "L'ordinateur distant est verrouillé",
-            "Windows protège l'écran de verrouillage : BrickMote ne peut ni l'afficher ni le contrôler "
-            "pour l'instant. L'image reviendra dès que la session sera déverrouillée sur place.",
+            "BrickMote ne peut pas afficher l'écran de verrouillage de ce poste (version portable, ou "
+            "assistant système pas encore démarré). L'image reviendra dès que la session sera déverrouillée.",
         ),
         "unavailable": (
             "Écran distant indisponible",
@@ -544,8 +546,15 @@ class ViewerWindow(QMainWindow):
         ),
     }
 
+    STATUS_BANNER = {
+        "uac": "Demande d'autorisation administrateur (UAC) : pour votre sécurité, elle se valide sur place.",
+    }
+
     def _on_remote_status(self, session, status: str):
+        # "secure": lock screen shown and controlled through BrickMote's system
+        # helper, nothing to explain
         self.screen.overlay = self.STATUS_TEXT.get(status)
+        self.screen.status_banner = self.STATUS_BANNER.get(status, "")
         self.screen.update()
 
     def _on_frame(self, session, width, height, cursor, images):

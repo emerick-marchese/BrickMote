@@ -105,7 +105,7 @@ class Recorder(SessionEvents):
                 return item
 
 
-async def make_sessions(tmp_path):
+async def make_sessions(tmp_path, **host_options):
     settings = Settings()
     host_ident = Identity.generate()
 
@@ -120,7 +120,8 @@ async def make_sessions(tmp_path):
     FakeInjector.log = []
     hrec, vrec = Recorder(), Recorder()
     host = HostSession(
-        hres, hrec, tmp_path / "host_dl", fps=30, capture_factory=FakeCapture, injector_factory=FakeInjector
+        hres, hrec, tmp_path / "host_dl", fps=30, capture_factory=FakeCapture, injector_factory=FakeInjector,
+        **host_options,
     )
     viewer = ViewerSession(vres, vrec, tmp_path / "viewer_dl")
     tasks = [asyncio.create_task(host.run()), asyncio.create_task(viewer.run())]
@@ -384,10 +385,79 @@ async def test_key_releases_are_never_dropped(tmp_path):
     with host._pending_lock:
         host._pending_input = host_mod.MAX_PENDING_INPUT  # simulate a flood
     ran = []
-    host._inject(lambda: ran.append("press"))
-    host._inject(lambda: ran.append("release"), droppable=False)
+
+    class Recording:
+        def key(self, down, key=None, char=None):
+            ran.append("press" if down else "release")
+
+    host._injector = Recording()
+    host._inject("key", True, "a")
+    host._inject("key", False, "a", droppable=False)
     host._input_exec.submit(lambda: None).result()
     assert ran == ["release"]
     assert host._pending_input == host_mod.MAX_PENDING_INPUT  # back to where it was: no drift
+    await viewer.close()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+class FakeSecure:
+    """Stands for the SYSTEM helper (lock screen)."""
+
+    def __init__(self):
+        self.state = {"desktop": "Winlogon", "uac": False}
+        self.calls = []
+        self.monitor = None
+
+    def grab(self, index):
+        self.calls.append(("grab", index))
+        img = np.full((H, W, 4), 40, dtype=np.uint8)
+        return W, H, img.tobytes()
+
+    def set_monitor(self, mon):
+        self.monitor = mon
+
+    def mouse_move(self, x, y):
+        self.calls.append(("move", x, y))
+
+    def key(self, down, key=None, char=None):
+        self.calls.append(("key", down, key, char))
+
+    def release_all(self):
+        self.calls.append(("release_all",))
+
+    def close(self):
+        pass
+
+
+async def test_lock_screen_goes_through_the_system_helper(tmp_path, monkeypatch):
+    import brickmote.host.session as host_mod
+
+    secure = FakeSecure()
+    locked = {"on": False}
+    monkeypatch.setattr(host_mod, "session_locked", lambda: locked["on"])
+    host, viewer, hrec, vrec, tasks = await make_sessions(tmp_path, secure_factory=lambda: secure)
+    await vrec.wait_for("frame")
+    assert secure.monitor is not None
+    locked["on"] = True
+    assert (await vrec.wait_for("status"))[1] == "secure"
+    await vrec.wait_for("frame")  # the lock screen is shown
+    await viewer.mouse("move", 100, 200)
+    await viewer.key(True, key="enter")
+    for _ in range(50):
+        if ("key", True, "enter", None) in secure.calls:
+            break
+        await asyncio.sleep(0.02)
+    assert ("move", 100, 200) in secure.calls and ("key", True, "enter", None) in secure.calls
+    secure.state["uac"] = True  # a UAC prompt: seen, but the helper refuses input
+    assert (await vrec.wait_for("status"))[1] == "uac"
+    locked["on"] = False
+    assert (await vrec.wait_for("status"))[1] == "ok"
+    FakeInjector.log.clear()
+    await viewer.mouse("move", 300, 400)
+    for _ in range(50):
+        if ("move", 300, 400) in FakeInjector.log:
+            break
+        await asyncio.sleep(0.02)
+    assert ("move", 300, 400) in FakeInjector.log, "back to the normal desktop"
     await viewer.close()
     await asyncio.gather(*tasks, return_exceptions=True)

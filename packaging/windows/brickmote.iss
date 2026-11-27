@@ -46,11 +46,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "startup"; Description: "Lancer BrickMote au démarrage de Windows (dans la zone de notification, pour rester joignable)"; GroupDescription: "Options :"; Flags: unchecked
+Name: "lockscreen"; Description: "Accès à l'écran de verrouillage depuis BrickMote (service système, comme AnyDesk)"; GroupDescription: "Options :"
 Name: "autoupdate"; Description: "Mises à jour automatiques, installées au démarrage du PC (signature vérifiée)"; GroupDescription: "Options :"
 Name: "firewall"; Description: "Autoriser les connexions directes (TCP 7070) et la découverte (UDP 50001) dans le pare-feu, sur les réseaux privés uniquement"; GroupDescription: "Options :"
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "tasks.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\BrickMote"; Filename: "{app}\BrickMote.exe"
@@ -64,13 +66,8 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""BrickMote (UDP 50001)"""; Flags: runhidden; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""BrickMote (TCP 7070)"" dir=in action=allow program=""{app}\BrickMote.exe"" protocol=TCP localport=7070 profile=private"; Flags: runhidden; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""BrickMote (UDP 50001)"" dir=in action=allow program=""{app}\BrickMote.exe"" protocol=UDP localport=50001 profile=private"; Flags: runhidden; Tasks: firewall
-; Automatic updates: a SYSTEM task checks for a signed new version at every boot
-Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""BrickMote\Update"""; Flags: runhidden; Check: not WizardIsTaskSelected('autoupdate')
-Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /RU SYSTEM /RL HIGHEST /SC ONSTART /DELAY 0000:20 /TN ""BrickMote\Update"" /TR ""\""{app}\BrickMote.exe\"" --update-service"""; Flags: runhidden; Tasks: autoupdate
-; the application starts this task itself when an update is available (mandatory
-; updates, no UAC prompt): signed-in users may run it, only admins/SYSTEM may change it.
-; The service only ever installs a newer release whose signature is valid.
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""$s=New-Object -ComObject Schedule.Service;$s.Connect();$f=$s.GetFolder('\BrickMote');$f.SetSecurityDescriptor('D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;GR;;;AU)',0);$f.GetTask('Update').SetSecurityDescriptor('D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;AU)',0)"""; Flags: runhidden; Tasks: autoupdate
+; SYSTEM scheduled tasks: automatic updates at boot, lock screen helper (see tasks.ps1)
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\tasks.ps1"" -App ""{app}"" {code:TaskFlags}"; Flags: runhidden
 Filename: "{app}\BrickMote.exe"; Description: "{cm:LaunchProgram,BrickMote}"; Flags: nowait postinstall skipifsilent
 ; After an update started from the application ("Installer maintenant"): restart it
 Filename: "{app}\BrickMote.exe"; Flags: nowait runasoriginaluser; Check: RelaunchRequested
@@ -79,6 +76,9 @@ Filename: "{app}\BrickMote.exe"; Flags: nowait runasoriginaluser; Check: Relaunc
 Type: filesandordirs; Name: "{app}\updates"
 
 [UninstallRun]
+Filename: "{sys}\schtasks.exe"; Parameters: "/End /TN ""BrickMote\Desktop"""; Flags: runhidden; RunOnceId: "EndDesktopTask"
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""BrickMote\Desktop"""; Flags: runhidden; RunOnceId: "DelDesktopTask"
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /FI ""IMAGENAME eq BrickMote.exe"""; Flags: runhidden; RunOnceId: "KillBrickMote"
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""BrickMote\Update"""; Flags: runhidden; RunOnceId: "DelUpdateTask"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""BrickMote (TCP 7070)"""; Flags: runhidden; RunOnceId: "DelFirewallTcp"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""BrickMote (UDP 50001)"""; Flags: runhidden; RunOnceId: "DelFirewallUdp"
@@ -90,4 +90,25 @@ french.WelcomeLabel2=Cet assistant va installer [name/ver] sur votre ordinateur.
 function RelaunchRequested: Boolean;
 begin
   Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
+
+function TaskFlags(Param: String): String;
+begin
+  Result := '-Update 0 -Desktop 0';
+  if WizardIsTaskSelected('autoupdate') then
+    StringChangeEx(Result, '-Update 0', '-Update 1', True);
+  if WizardIsTaskSelected('lockscreen') then
+    StringChangeEx(Result, '-Desktop 0', '-Desktop 1', True);
+end;
+
+// The lock screen helper runs from {app} as SYSTEM: stop it (and any other
+// BrickMote process) so that every file can be replaced.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Code: Integer;
+begin
+  Exec(ExpandConstant('{sys}\schtasks.exe'), '/End /TN "BrickMote\Desktop"', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /FI "IMAGENAME eq BrickMote.exe"', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Sleep(1000);
+  Result := '';
 end;
